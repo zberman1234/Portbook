@@ -1,30 +1,35 @@
 # Portbook
 
-A local, single-user theoretical investment portfolio dashboard. Add any ticker from
-any exchange Yahoo Finance supports, pick a purchase date, and the dashboard assumes
-you bought **$100 USD** of that stock at that day's close. It tracks current value,
-total gain/loss, today's change, allocation, and portfolio value over time in a
-Fidelity-style positions view.
-
-![overview](./docs/screenshot.png)
+A local, single-user theoretical investment portfolio dashboard. Add any ticker
+from any exchange Yahoo Finance supports, pick a purchase date, and the
+dashboard assumes you bought **$100 USD** of that stock at that day's close. It
+tracks current value, total gain/loss, today's change, allocation, and
+portfolio value over time in a Fidelity-style positions view. You can organize
+holdings into multiple named portfolios and switch between them with tabs.
 
 ## Architecture
 
 ```
 Portbook/
-  client/            Vite + React + TypeScript + Tailwind + TanStack Query + Recharts
-  server/            Express + TypeScript + yahoo-finance2 (unofficial Yahoo Finance client)
-  portfolio.json     Your portfolio — auto-created on first add
+  client/           Vite + React + TypeScript + Tailwind + TanStack Query + Recharts
+  server/           Express + TypeScript + yahoo-finance2 (unofficial Yahoo Finance client)
+  portfolios.json   Your data — auto-created on first run (gitignored)
 ```
 
-- The server owns the data: every add/remove is a REST call to `/api/positions*`
-  and is persisted to `portfolio.json` next to `package.json`.
-- The client is a dashboard UI that reads from `/api/positions` and proxies Yahoo
-  Finance calls (`/api/search`, `/api/quote`, `/api/history`, `/api/fx`,
-  `/api/close-on`) through the same server, which handles CORS and caches results
-  with LRU.
+- The server owns the data: every portfolio/position mutation is a REST call
+  and is persisted to `portfolios.json` next to `package.json` (atomic
+  write-then-rename, with writes serialized through a promise chain).
+- The client is a dashboard UI that reads from `/api/portfolios` and proxies
+  Yahoo Finance calls (`/api/search`, `/api/quote`, `/api/history`, `/api/fx`,
+  `/api/close-on`) through the same server, which handles CORS and caches
+  results with LRU.
+- The active portfolio id is persisted in `localStorage` so tab selection
+  survives reloads.
 - All prices are normalized to USD using Yahoo FX pairs (e.g. `GBPUSD=X`). LSE
-  symbols that report in GBp (pence) are converted to GBP before FX.
+  symbols that report in GBp (pence) — and similar sub-unit quotes like ZAc or
+  ILA — are converted to their major unit before FX.
+- If an older `portfolio.json` (flat positions array) exists on first run, it
+  is migrated into a `Default` portfolio inside `portfolios.json` automatically.
 
 ## Setup
 
@@ -35,40 +40,72 @@ npm install
 npm run dev
 ```
 
-This runs both the server (`http://localhost:8787`) and the client (`http://localhost:5173`)
-together. Open http://localhost:5173.
+This runs both the server (`http://localhost:8787`) and the client
+(`http://localhost:5173`) together. Open http://localhost:5173.
 
-Your portfolio will be written to `./portfolio.json` on the first add. Feel free to
-back it up, edit it by hand, or delete it to start over.
+Your portfolios will be written to `./portfolios.json` on the first add. Feel
+free to back it up, edit it by hand, or delete it to start over.
+
+To produce a production build:
+
+```bash
+npm run build     # compiles server (tsc) and client (vite build)
+npm run start     # runs the compiled server from server/dist
+```
 
 ## Usage
 
-1. In the **Add position** form, start typing a company name or ticker. Results
-   come from Yahoo Finance across all the exchanges they index (NYSE, Nasdaq, LSE,
-   XETRA, TSE, HKEX, Euronext, crypto, ETFs, etc.).
-2. Pick a date — the dashboard will look up that day's adjusted close (walking
-   forward to the next trading day if needed), convert it to USD using that day's
-   FX rate, and record `shares = $100 / purchasePriceUSD`.
-3. Hit **Refresh** to repoll current quotes. Historical/FX data is cached on the
-   server so clicking refresh is cheap.
+1. Use the **portfolio tabs** at the top to pick a portfolio, or click **+ New
+   portfolio** to create another one. Delete removes the active portfolio and
+   all its positions.
+2. In **Add position**, choose a mode:
+   - **Single** — start typing a company name or ticker. Results come from
+     Yahoo Finance across every exchange they index (NYSE, Nasdaq, LSE, XETRA,
+     TSE, HKEX, Euronext, crypto, ETFs, etc.). Pick a result, pick a date, add.
+   - **Bulk paste** — paste any text and every `$TICKER` mention is extracted,
+     resolved against Yahoo's search (preferring exact symbol matches), and
+     added to the active portfolio at the chosen date. Per-ticker progress is
+     shown as each one is added.
+3. The chosen date is used to look up that day's adjusted close (walking
+   forward to the next trading day if needed), convert it to USD using that
+   day's FX rate, and record `shares = $100 / purchasePriceUSD`.
+4. Hit **Refresh** to repoll current quotes. Historical and FX data are cached
+   on the server so refreshes are cheap.
 
 ## API
 
-- `GET  /api/positions` — read portfolio
-- `POST /api/positions` — `{ symbol, name?, exchange?, currency?, purchaseDate }`
-- `DELETE /api/positions/:id`
+Portfolio CRUD:
+
+- `GET    /api/portfolios` — list all portfolios (with their positions)
+- `POST   /api/portfolios` — `{ name }` → `{ portfolio, portfolios }`
+- `DELETE /api/portfolios/:portfolioId`
+
+Positions (nested under a portfolio):
+
+- `POST   /api/portfolios/:portfolioId/positions` —
+  `{ symbol, name?, exchange?, currency?, purchaseDate }` →
+  `{ position, portfolios }`
+- `DELETE /api/portfolios/:portfolioId/positions/:positionId`
+
+Yahoo Finance proxy:
+
 - `GET /api/search?q=…`
 - `GET /api/quote?symbols=AAPL,MSFT`
 - `GET /api/history?symbol=AAPL&from=2023-01-01&to=2024-01-01`
 - `GET /api/close-on?symbol=AAPL&on=2023-01-10`
 - `GET /api/fx?base=GBP&quote=USD&on=2023-01-10`
 
+Misc:
+
+- `GET /api/health` — liveness + the resolved path of `portfolios.json`
+
 ## Notes & out of scope
 
-- **Unofficial data**: `yahoo-finance2` scrapes Yahoo; rate limits are modest but
-  real. The server caches quotes (10 min) and history/FX (24 h) to be polite.
-- **Adjusted close** is used for historical pricing, which accounts for splits and
-  dividends on the underlying series.
+- **Unofficial data**: `yahoo-finance2` scrapes Yahoo; rate limits are modest
+  but real. The server caches quotes (10 min) and history/FX (24 h) to be
+  polite.
+- **Adjusted close** is used for historical pricing, which accounts for splits
+  and dividends on the underlying series.
 - Dividends are not separately reinvested on top of that adjusted-close logic.
 - No auth or multi-user support — this is designed for a single machine.
 - No real-time streaming — quotes refresh on demand via the Refresh button.

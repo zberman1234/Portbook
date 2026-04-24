@@ -22,6 +22,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
+  renamePortfolio: (portfolioId: string, name: string) =>
+    http<{ portfolio: Portfolio; portfolios: Portfolio[] }>(
+      `/api/portfolios/${encodeURIComponent(portfolioId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      },
+    ),
   deletePortfolio: (portfolioId: string) =>
     http<Portfolio[]>(`/api/portfolios/${encodeURIComponent(portfolioId)}`, {
       method: 'DELETE',

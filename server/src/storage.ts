@@ -82,6 +82,30 @@ export async function addPortfolio(name: string): Promise<{ portfolio: Portfolio
   return { portfolio, portfolios: updated };
 }
 
+export async function renamePortfolio(
+  id: string,
+  name: string,
+): Promise<{ portfolio: Portfolio; portfolios: Portfolio[] }> {
+  const current = await loadPortfolios();
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error('name required');
+  }
+  let renamed: Portfolio | null = null;
+  const updated = current.map((p) => {
+    if (p.id !== id) return p;
+    renamed = { ...p, name: trimmed };
+    return renamed;
+  });
+  if (!renamed) {
+    const err = new Error(`portfolio not found: ${id}`);
+    (err as NodeJS.ErrnoException).code = 'ENOENT';
+    throw err;
+  }
+  await savePortfolios(updated);
+  return { portfolio: renamed, portfolios: updated };
+}
+
 export async function removePortfolio(id: string): Promise<Portfolio[]> {
   const current = await loadPortfolios();
   const updated = current.filter((p) => p.id !== id);

@@ -12,6 +12,7 @@ import {
   loadPortfolios,
   addPortfolio,
   removePortfolio,
+  renamePortfolio,
   addPositionToPortfolio,
   removePositionFromPortfolio,
   type Position,
@@ -48,6 +49,28 @@ app.post('/api/portfolios', async (req, res, next) => {
     }
     const result = await addPortfolio(name);
     res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch('/api/portfolios/:portfolioId', async (req, res, next) => {
+  try {
+    const { name } = req.body as { name?: string };
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ error: 'name required' });
+      return;
+    }
+    try {
+      const result = await renamePortfolio(req.params.portfolioId, name);
+      res.json(result);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: 'portfolio not found' });
+        return;
+      }
+      throw err;
+    }
   } catch (err) {
     next(err);
   }

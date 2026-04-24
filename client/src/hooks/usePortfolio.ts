@@ -108,6 +108,14 @@ export function usePortfolio() {
     },
   });
 
+  const renamePortfolioMutation = useMutation({
+    mutationFn: ({ portfolioId, name }: { portfolioId: string; name: string }) =>
+      api.renamePortfolio(portfolioId, name),
+    onSuccess: (data) => {
+      qc.setQueryData(['portfolios'], data.portfolios);
+    },
+  });
+
   const deletePortfolioMutation = useMutation({
     mutationFn: (portfolioId: string) => api.deletePortfolio(portfolioId),
     onSuccess: (data, deletedId) => {
@@ -134,6 +142,8 @@ export function usePortfolio() {
     removing: removeMutation.isPending,
     createPortfolio: createPortfolioMutation.mutateAsync,
     creatingPortfolio: createPortfolioMutation.isPending,
+    renamePortfolio: renamePortfolioMutation.mutateAsync,
+    renamingPortfolio: renamePortfolioMutation.isPending,
     deletePortfolio: deletePortfolioMutation.mutateAsync,
     deletingPortfolio: deletePortfolioMutation.isPending,
   };

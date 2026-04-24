@@ -19,6 +19,8 @@ export default function App() {
     error: positionsError,
     createPortfolio,
     creatingPortfolio,
+    renamePortfolio,
+    renamingPortfolio,
     deletePortfolio,
     deletingPortfolio,
   } = usePortfolio();
@@ -63,8 +65,10 @@ export default function App() {
           activePortfolioId={activePortfolioId}
           onSelect={setActivePortfolioId}
           onCreate={createPortfolio}
+          onRename={(portfolioId, name) => renamePortfolio({ portfolioId, name })}
           onDelete={deletePortfolio}
           creating={creatingPortfolio}
+          renaming={renamingPortfolio}
           deleting={deletingPortfolio}
         />
 

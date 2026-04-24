@@ -56,8 +56,9 @@ npm run start     # runs the compiled server from server/dist
 ## Usage
 
 1. Use the **portfolio tabs** at the top to pick a portfolio, or click **+ New
-   portfolio** to create another one. Delete removes the active portfolio and
-   all its positions.
+   portfolio** to create another one. Click the ✎ button (or double-click a
+   tab) to rename a portfolio inline — Enter saves, Esc cancels. Delete
+   removes the active portfolio and all its positions.
 2. In **Add position**, choose a mode:
    - **Single** — start typing a company name or ticker. Results come from
      Yahoo Finance across every exchange they index (NYSE, Nasdaq, LSE, XETRA,
@@ -78,6 +79,7 @@ Portfolio CRUD:
 
 - `GET    /api/portfolios` — list all portfolios (with their positions)
 - `POST   /api/portfolios` — `{ name }` → `{ portfolio, portfolios }`
+- `PATCH  /api/portfolios/:portfolioId` — `{ name }` → `{ portfolio, portfolios }`
 - `DELETE /api/portfolios/:portfolioId`
 
 Positions (nested under a portfolio):

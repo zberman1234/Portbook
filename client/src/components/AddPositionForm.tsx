@@ -16,6 +16,11 @@ export function AddPositionForm() {
   const [selected, setSelected] = useState<SearchHit | null>(null);
   const [date, setDate] = useState(todayISO());
   const [error, setError] = useState<string | null>(null);
+  // Bumped after a successful add to remount TickerSearch and clear its
+  // internal input text (otherwise the previous symbol stays visible while
+  // `selected` is null, leading to a confusing "pick a ticker" error on the
+  // next submit).
+  const [searchResetKey, setSearchResetKey] = useState(0);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -42,6 +47,7 @@ export function AddPositionForm() {
       });
       setSelected(null);
       setDate(todayISO());
+      setSearchResetKey((k) => k + 1);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -62,7 +68,7 @@ export function AddPositionForm() {
       {mode === 'single' ? (
         <form onSubmit={handleSubmit}>
           <div className="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto] gap-3 md:items-end">
-            <TickerSearch value={selected} onChange={setSelected} />
+            <TickerSearch key={searchResetKey} value={selected} onChange={setSelected} />
             <div>
               <label className="text-xs text-neutral-500 block mb-1">Purchase date</label>
               <input

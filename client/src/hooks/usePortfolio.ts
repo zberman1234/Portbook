@@ -24,6 +24,22 @@ function writeStoredActiveId(id: string | null): void {
   }
 }
 
+let sharedActivePortfolioId: string | null | undefined;
+const activePortfolioListeners = new Set<(id: string | null) => void>();
+
+function getSharedActivePortfolioId(): string | null {
+  if (sharedActivePortfolioId === undefined) {
+    sharedActivePortfolioId = readStoredActiveId();
+  }
+  return sharedActivePortfolioId;
+}
+
+function setSharedActivePortfolioId(id: string | null): void {
+  sharedActivePortfolioId = id;
+  writeStoredActiveId(id);
+  activePortfolioListeners.forEach((listener) => listener(id));
+}
+
 export function usePortfolio() {
   const qc = useQueryClient();
 
@@ -35,16 +51,21 @@ export function usePortfolio() {
   const portfolios: Portfolio[] = useMemo(() => query.data ?? [], [query.data]);
 
   const [activePortfolioIdState, setActivePortfolioIdState] = useState<string | null>(
-    () => readStoredActiveId(),
+    () => getSharedActivePortfolioId(),
   );
+
+  useEffect(() => {
+    const listener = (id: string | null) => setActivePortfolioIdState(id);
+    activePortfolioListeners.add(listener);
+    return () => activePortfolioListeners.delete(listener);
+  }, []);
 
   // Reconcile the active id with whatever portfolios came back from the server.
   // If the stored id is missing or no longer exists, fall back to the first one.
   useEffect(() => {
     if (portfolios.length === 0) {
       if (activePortfolioIdState !== null) {
-        setActivePortfolioIdState(null);
-        writeStoredActiveId(null);
+        setSharedActivePortfolioId(null);
       }
       return;
     }
@@ -53,14 +74,12 @@ export function usePortfolio() {
       : false;
     if (!exists) {
       const fallback = portfolios[0].id;
-      setActivePortfolioIdState(fallback);
-      writeStoredActiveId(fallback);
+      setSharedActivePortfolioId(fallback);
     }
   }, [portfolios, activePortfolioIdState]);
 
   const setActivePortfolioId = useCallback((id: string) => {
-    setActivePortfolioIdState(id);
-    writeStoredActiveId(id);
+    setSharedActivePortfolioId(id);
   }, []);
 
   const activePortfolio: Portfolio | null = useMemo(() => {
@@ -122,8 +141,7 @@ export function usePortfolio() {
       qc.setQueryData(['portfolios'], data);
       if (activePortfolioIdState === deletedId) {
         const fallback = data[0]?.id ?? null;
-        setActivePortfolioIdState(fallback);
-        writeStoredActiveId(fallback);
+        setSharedActivePortfolioId(fallback);
       }
     },
   });

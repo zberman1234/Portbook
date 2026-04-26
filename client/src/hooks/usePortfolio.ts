@@ -57,7 +57,9 @@ export function usePortfolio() {
   useEffect(() => {
     const listener = (id: string | null) => setActivePortfolioIdState(id);
     activePortfolioListeners.add(listener);
-    return () => activePortfolioListeners.delete(listener);
+    return () => {
+      activePortfolioListeners.delete(listener);
+    };
   }, []);
 
   // Reconcile the active id with whatever portfolios came back from the server.

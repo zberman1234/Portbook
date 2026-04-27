@@ -21,6 +21,15 @@ import {
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 8787);
+const DEFAULT_COST_BASIS_USD = 100;
+
+function parseCostBasisUSD(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_COST_BASIS_USD;
+  }
+  const amount = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
 
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
@@ -95,6 +104,7 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
       exchange,
       currency,
       purchaseDate,
+      costBasisUSD: rawCostBasisUSD,
     } = req.body as Partial<Position>;
 
     if (!symbol || typeof symbol !== 'string') {
@@ -103,6 +113,11 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
     }
     if (!purchaseDate || !/^\d{4}-\d{2}-\d{2}$/.test(purchaseDate)) {
       res.status(400).json({ error: 'purchaseDate must be YYYY-MM-DD' });
+      return;
+    }
+    const costBasisUSD = parseCostBasisUSD(rawCostBasisUSD);
+    if (costBasisUSD === null) {
+      res.status(400).json({ error: 'costBasisUSD must be a positive number' });
       return;
     }
 
@@ -117,6 +132,7 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
       exchange: exchange ?? '',
       currency: rawCurrency || 'USD',
       purchaseDate,
+      costBasisUSD,
       createdAt: new Date().toISOString(),
     };
     try {

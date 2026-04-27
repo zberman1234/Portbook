@@ -14,7 +14,7 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '../lib/api';
-import { COST_BASIS_USD } from '../lib/calc';
+import { costBasisUSD } from '../lib/calc';
 import { fmtPct, fmtUSD, fmtUSDSigned } from '../lib/format';
 import type { HistoryRow, Position } from '../types';
 
@@ -204,7 +204,7 @@ export function PerformanceChart({ positions }: Props) {
       const buyNative = normalizeNative(buyClose.close, p.currency) ?? 0;
       const purchasePriceUSD = buyNative * buyFxRate;
       if (!Number.isFinite(purchasePriceUSD) || purchasePriceUSD <= 0) return null;
-      const shares = COST_BASIS_USD / purchasePriceUSD;
+      const shares = costBasisUSD(p) / purchasePriceUSD;
 
       const history = historyQueries[i]?.data ?? [];
       const fxHistory = fxSeriesQueries[i]?.data ?? [];
@@ -241,7 +241,7 @@ export function PerformanceChart({ positions }: Props) {
       const sharesPerPosition = positions.map((p) => {
         const buyPrice = firstPriceOnOrAfter(sortedDates, priceByDate, p.purchaseDate);
         if (buyPrice === null || buyPrice <= 0) return null;
-        return COST_BASIS_USD / buyPrice;
+        return costBasisUSD(p) / buyPrice;
       });
       return { sharesPerPosition, priceByDate, sortedDates };
     });
@@ -256,7 +256,7 @@ export function PerformanceChart({ positions }: Props) {
         const p = positions[i];
         const active = p.purchaseDate <= d;
         if (!active) continue;
-        cost += COST_BASIS_USD;
+        cost += costBasisUSD(p);
         const snap = snaps[i];
         if (!snap) continue;
         const v = snap.usdByDate.get(d);

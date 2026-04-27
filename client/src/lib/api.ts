@@ -43,6 +43,7 @@ export const api = {
       exchange?: string;
       currency?: string;
       purchaseDate: string;
+      costBasisUSD?: number;
     },
   ) =>
     http<{ position: Position; portfolios: Portfolio[] }>(

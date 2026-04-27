@@ -16,6 +16,7 @@ export interface Position {
   exchange: string;
   currency: string;
   purchaseDate: string; // YYYY-MM-DD
+  costBasisUSD?: number;
   createdAt: string; // ISO timestamp
 }
 

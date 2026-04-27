@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { TickerSearch } from './TickerSearch';
 import { BulkAddForm } from './BulkAddForm';
 import { usePortfolio } from '../hooks/usePortfolio';
+import { DEFAULT_COST_BASIS_USD } from '../lib/calc';
 import type { SearchHit } from '../types';
 
 function todayISO(): string {
@@ -15,6 +16,7 @@ export function AddPositionForm() {
   const [mode, setMode] = useState<Mode>('single');
   const [selected, setSelected] = useState<SearchHit | null>(null);
   const [date, setDate] = useState(todayISO());
+  const [amount, setAmount] = useState(String(DEFAULT_COST_BASIS_USD));
   const [error, setError] = useState<string | null>(null);
   // Bumped after a successful add to remount TickerSearch and clear its
   // internal input text (otherwise the previous symbol stays visible while
@@ -37,6 +39,11 @@ export function AddPositionForm() {
       setError('Purchase date cannot be in the future.');
       return;
     }
+    const costBasisUSD = Number(amount);
+    if (!Number.isFinite(costBasisUSD) || costBasisUSD <= 0) {
+      setError('Please enter an investment amount greater than $0.');
+      return;
+    }
     try {
       await add({
         symbol: selected.symbol,
@@ -44,9 +51,11 @@ export function AddPositionForm() {
         exchange: selected.exchangeDisplay ?? selected.exchange,
         currency: selected.currency ?? 'USD',
         purchaseDate: date,
+        costBasisUSD,
       });
       setSelected(null);
       setDate(todayISO());
+      setAmount(String(DEFAULT_COST_BASIS_USD));
       setSearchResetKey((k) => k + 1);
     } catch (err) {
       setError((err as Error).message);
@@ -61,13 +70,13 @@ export function AddPositionForm() {
           <ModeToggle mode={mode} onChange={setMode} />
         </div>
         <span className="text-xs text-neutral-500">
-          $100 USD per position, assumed bought at that day's close
+          Default $100 USD per position; edit amount for custom buys
         </span>
       </div>
 
       {mode === 'single' ? (
         <form onSubmit={handleSubmit}>
-          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto] gap-3 md:items-end">
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,0.8fr)_auto] gap-3 md:items-end">
             <TickerSearch key={searchResetKey} value={selected} onChange={setSelected} />
             <div>
               <label className="text-xs text-neutral-500 block mb-1">Purchase date</label>
@@ -77,6 +86,18 @@ export function AddPositionForm() {
                 max={todayISO()}
                 min="1990-01-01"
                 onChange={(e) => setDate(e.target.value)}
+                className="w-full px-3 py-2 rounded-md bg-neutral-900 border border-neutral-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-neutral-500 block mb-1">Amount (USD)</label>
+              <input
+                type="number"
+                value={amount}
+                min="0.01"
+                step="0.01"
+                inputMode="decimal"
+                onChange={(e) => setAmount(e.target.value)}
                 className="w-full px-3 py-2 rounded-md bg-neutral-900 border border-neutral-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 text-sm"
               />
             </div>

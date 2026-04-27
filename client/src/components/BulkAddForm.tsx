@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { usePortfolio } from '../hooks/usePortfolio';
+import { DEFAULT_COST_BASIS_USD } from '../lib/calc';
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -37,6 +38,7 @@ export function BulkAddForm() {
   const { add } = usePortfolio();
   const [text, setText] = useState('');
   const [date, setDate] = useState(todayISO());
+  const [amount, setAmount] = useState(String(DEFAULT_COST_BASIS_USD));
   const [rows, setRows] = useState<Row[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +59,11 @@ export function BulkAddForm() {
     }
     if (date > todayISO()) {
       setError('Purchase date cannot be in the future.');
+      return;
+    }
+    const costBasisUSD = Number(amount);
+    if (!Number.isFinite(costBasisUSD) || costBasisUSD <= 0) {
+      setError('Please enter an investment amount greater than $0.');
       return;
     }
     if (detected.length === 0) {
@@ -99,6 +106,7 @@ export function BulkAddForm() {
           exchange,
           currency,
           purchaseDate: date,
+          costBasisUSD,
         });
         updateRow(ticker, {
           status: 'added',
@@ -118,6 +126,7 @@ export function BulkAddForm() {
 
   function handleClear() {
     setText('');
+    setAmount(String(DEFAULT_COST_BASIS_USD));
     setRows([]);
     setError(null);
   }
@@ -146,6 +155,18 @@ export function BulkAddForm() {
               max={todayISO()}
               min="1990-01-01"
               onChange={(e) => setDate(e.target.value)}
+              className="w-full px-3 py-2 rounded-md bg-neutral-900 border border-neutral-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-neutral-500 block mb-1">Amount per ticker (USD)</label>
+            <input
+              type="number"
+              value={amount}
+              min="0.01"
+              step="0.01"
+              inputMode="decimal"
+              onChange={(e) => setAmount(e.target.value)}
               className="w-full px-3 py-2 rounded-md bg-neutral-900 border border-neutral-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 text-sm"
             />
           </div>

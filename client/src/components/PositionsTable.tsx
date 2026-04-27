@@ -10,6 +10,7 @@ type SortKey =
   | 'symbol'
   | 'name'
   | 'purchaseDate'
+  | 'costBasisUSD'
   | 'shares'
   | 'purchasePriceUSD'
   | 'currentPriceUSD'
@@ -27,6 +28,7 @@ const columns: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
   { key: 'symbol', label: 'Symbol' },
   { key: 'name', label: 'Name' },
   { key: 'purchaseDate', label: 'Purchased' },
+  { key: 'costBasisUSD', label: 'Cost Basis', align: 'right' },
   { key: 'shares', label: 'Shares', align: 'right' },
   { key: 'purchasePriceUSD', label: 'Cost/Share', align: 'right' },
   { key: 'currentPriceUSD', label: 'Last', align: 'right' },
@@ -198,7 +200,7 @@ export function PositionsTable({ enriched, loading }: Props) {
       <div className="rounded-xl border border-dashed border-neutral-800 bg-neutral-950/40 p-12 text-center">
         <div className="text-neutral-300 font-medium mb-1">No positions yet</div>
         <div className="text-sm text-neutral-500">
-          Use the form above to add your first ticker. Every position represents a hypothetical $100 USD buy on its purchase date.
+          Use the form above to add your first ticker. Each position represents a hypothetical USD buy on its purchase date.
         </div>
       </div>
     );
@@ -256,6 +258,7 @@ export function PositionsTable({ enriched, loading }: Props) {
                       {p.name}
                     </td>
                     <td className="px-3 py-2 text-neutral-400 num">{p.purchaseDate}</td>
+                    <td className="px-3 py-2 text-right num text-neutral-300">{fmtUSD(p.costBasisUSD)}</td>
                     <td className="px-3 py-2 text-right num text-neutral-300">{fmtShares(p.shares)}</td>
                     <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(p.purchasePriceUSD)}</td>
                     <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(p.currentPriceUSD)}</td>

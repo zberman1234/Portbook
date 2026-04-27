@@ -98,6 +98,7 @@ export function usePortfolio() {
       exchange?: string;
       currency?: string;
       purchaseDate: string;
+      costBasisUSD?: number;
     }) => {
       if (!activePortfolioIdState) {
         return Promise.reject(new Error('no active portfolio'));

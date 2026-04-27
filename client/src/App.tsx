@@ -45,7 +45,7 @@ export default function App() {
             <div>
               <h1 className="text-lg font-semibold text-neutral-100 leading-tight">Portbook</h1>
               <p className="text-xs text-neutral-500 leading-tight">
-                $100 USD per position · hypothetical returns
+                Custom USD position sizes · hypothetical returns
               </p>
             </div>
           </div>
@@ -93,7 +93,7 @@ export default function App() {
       </main>
 
       <footer className="max-w-7xl mx-auto px-6 pb-10 pt-4 text-xs text-neutral-600">
-        Data via Yahoo Finance (unofficial). Assumed cost basis: $100 USD per position on its purchase date.
+        Data via Yahoo Finance (unofficial). Default cost basis is $100 USD per position; custom amounts are supported.
       </footer>
     </div>
   );

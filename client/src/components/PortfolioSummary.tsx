@@ -20,7 +20,7 @@ export function PortfolioSummary({ enriched, loading }: Props) {
     {
       label: 'Total cost basis',
       value: fmtUSD(t.cost),
-      hint: '$100 per position',
+      hint: 'sum of position amounts',
       color: 'text-neutral-300',
     },
     {

@@ -1,6 +1,13 @@
 import type { EnrichedPosition, Position, QuoteSnapshot } from '../types';
 
-export const COST_BASIS_USD = 100;
+export const DEFAULT_COST_BASIS_USD = 100;
+
+export function costBasisUSD(position: Pick<Position, 'costBasisUSD'>): number {
+  const amount = position.costBasisUSD;
+  return typeof amount === 'number' && Number.isFinite(amount) && amount > 0
+    ? amount
+    : DEFAULT_COST_BASIS_USD;
+}
 
 export interface PriceBundle {
   quote?: QuoteSnapshot;
@@ -45,6 +52,7 @@ function normalizeNativePrice(
 }
 
 export function enrich(position: Position, bundle: PriceBundle): EnrichedPosition {
+  const costBasis = costBasisUSD(position);
   const base: EnrichedPosition = {
     ...position,
     shares: 0,
@@ -52,7 +60,7 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
     purchasePriceNative: 0,
     currentPriceUSD: 0,
     currentPriceNative: 0,
-    costBasisUSD: COST_BASIS_USD,
+    costBasisUSD: costBasis,
     marketValueUSD: 0,
     totalGainUSD: 0,
     totalGainPct: 0,
@@ -74,7 +82,7 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
     return { ...base, error: 'Invalid purchase price' };
   }
 
-  const shares = COST_BASIS_USD / purchasePriceUSD;
+  const shares = costBasis / purchasePriceUSD;
 
   const q = bundle.quote;
   const currentNativeRaw = q?.regularMarketPrice ?? null;
@@ -97,8 +105,8 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
   const currentPriceUSD = currentNative.price * curFx;
 
   const marketValueUSD = shares * currentPriceUSD;
-  const totalGainUSD = marketValueUSD - COST_BASIS_USD;
-  const totalGainPct = totalGainUSD / COST_BASIS_USD;
+  const totalGainUSD = marketValueUSD - costBasis;
+  const totalGainPct = totalGainUSD / costBasis;
   const dayChangePct =
     typeof q?.regularMarketChangePercent === 'number' ? q.regularMarketChangePercent / 100 : 0;
 
@@ -109,7 +117,7 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
     purchasePriceUSD,
     currentPriceNative: currentNative.price,
     currentPriceUSD,
-    costBasisUSD: COST_BASIS_USD,
+    costBasisUSD: costBasis,
     marketValueUSD,
     totalGainUSD,
     totalGainPct,
@@ -129,7 +137,7 @@ export interface Totals {
 
 export function totals(positions: EnrichedPosition[]): Totals {
   const valid = positions.filter((p) => !p.error && p.marketValueUSD > 0);
-  const cost = valid.length * COST_BASIS_USD;
+  const cost = valid.reduce((s, p) => s + p.costBasisUSD, 0);
   const value = valid.reduce((s, p) => s + p.marketValueUSD, 0);
   const gain = value - cost;
   const gainPct = cost > 0 ? gain / cost : 0;

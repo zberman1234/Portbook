@@ -2,7 +2,8 @@
 
 A local, single-user theoretical investment portfolio dashboard. Add any ticker
 from any exchange Yahoo Finance supports, pick a purchase date, and the
-dashboard assumes you bought **$100 USD** of that stock at that day's close. It
+dashboard assumes you bought **$100 USD** of that stock at that day's close by
+default, or you can enter a custom USD amount for that position. It
 tracks current value, total gain/loss, today's change, allocation, and
 portfolio value over time in a Fidelity-style positions view. You can organize
 holdings into multiple named portfolios and switch between them with tabs.
@@ -62,14 +63,15 @@ npm run start     # runs the compiled server from server/dist
 2. In **Add position**, choose a mode:
    - **Single** — start typing a company name or ticker. Results come from
      Yahoo Finance across every exchange they index (NYSE, Nasdaq, LSE, XETRA,
-     TSE, HKEX, Euronext, crypto, ETFs, etc.). Pick a result, pick a date, add.
+     TSE, HKEX, Euronext, crypto, ETFs, etc.). Pick a result, pick a date,
+     optionally edit the USD amount, add.
    - **Bulk paste** — paste any text and every `$TICKER` mention is extracted,
      resolved against Yahoo's search (preferring exact symbol matches), and
-     added to the active portfolio at the chosen date. Per-ticker progress is
-     shown as each one is added.
+     added to the active portfolio at the chosen date and amount. Per-ticker
+     progress is shown as each one is added.
 3. The chosen date is used to look up that day's adjusted close (walking
    forward to the next trading day if needed), convert it to USD using that
-   day's FX rate, and record `shares = $100 / purchasePriceUSD`.
+   day's FX rate, and record `shares = costBasisUSD / purchasePriceUSD`.
 4. Hit **Refresh** to repoll current quotes. Historical and FX data are cached
    on the server so refreshes are cheap.
 
@@ -85,7 +87,7 @@ Portfolio CRUD:
 Positions (nested under a portfolio):
 
 - `POST   /api/portfolios/:portfolioId/positions` —
-  `{ symbol, name?, exchange?, currency?, purchaseDate }` →
+  `{ symbol, name?, exchange?, currency?, purchaseDate, costBasisUSD? }` →
   `{ position, portfolios }`
 - `DELETE /api/portfolios/:portfolioId/positions/:positionId`
 

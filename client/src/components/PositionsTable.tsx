@@ -1,7 +1,10 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { usePortfolio } from '../hooks/usePortfolio';
+import { api } from '../lib/api';
 import { colorClass, fmtPct, fmtPrice, fmtShares, fmtUSD, fmtUSDSigned } from '../lib/format';
-import type { EnrichedPosition } from '../types';
+import type { EnrichedPosition, HistoryRow } from '../types';
 
 type SortKey =
   | 'symbol'
@@ -33,10 +36,135 @@ const columns: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
   { key: 'totalGainPct', label: 'Total G/L %', align: 'right' },
 ];
 
+type PriceChartRow = {
+  date: string;
+  price: number;
+};
+
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeNative(price: number | null, currency: string | undefined): number | null {
+  if (price === null) return null;
+  if (!currency) return price;
+  if (currency === 'GBp' || currency.toUpperCase() === 'GBX') return price / 100;
+  if (currency === 'ZAc' || currency.toUpperCase() === 'ZAX') return price / 100;
+  return price;
+}
+
+function buildPriceChartRows(history: HistoryRow[] | undefined, currency: string): PriceChartRow[] {
+  return (history ?? [])
+    .map((row) => {
+      const price = normalizeNative(row.adjclose ?? row.close, currency);
+      return typeof price === 'number' && Number.isFinite(price)
+        ? { date: row.date, price }
+        : null;
+    })
+    .filter((row): row is PriceChartRow => row !== null);
+}
+
+function PositionDropdown({ position, open }: { position: EnrichedPosition; open: boolean }) {
+  const today = todayISO();
+  const historyQuery = useQuery({
+    queryKey: ['history', position.symbol, position.purchaseDate],
+    queryFn: () => api.history(position.symbol, position.purchaseDate, today),
+    staleTime: 1000 * 60 * 60,
+    enabled: open && !position.error,
+  });
+
+  const chartData = useMemo(
+    () => buildPriceChartRows(historyQuery.data, position.currency),
+    [historyQuery.data, position.currency],
+  );
+  const stroke = position.totalGainUSD >= 0 ? '#10b981' : '#f87171';
+
+  return (
+    <tr
+      className={`${
+        open ? 'border-t border-neutral-900 bg-neutral-900/20' : 'border-t border-transparent'
+      }`}
+    >
+      <td colSpan={columns.length + 1} className="p-0">
+        <div
+          className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${
+            open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+          }`}
+        >
+          <div className="overflow-hidden">
+            <div className="px-3 py-3">
+              <div className="rounded-lg border border-neutral-800 bg-neutral-950/70 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs font-medium text-neutral-300">Price history</div>
+                  <div className="text-xs text-neutral-500">{position.currency}</div>
+                </div>
+                <div className="h-44">
+                  {position.error ? (
+                    <div className="flex h-full items-center justify-center rounded border border-amber-700/40 bg-amber-900/20 px-3 text-center text-xs text-amber-300/90">
+                      Pricing unavailable for this symbol/date: {position.error}
+                    </div>
+                  ) : historyQuery.isLoading ? (
+                    <div className="flex h-full items-center justify-center text-xs text-neutral-500">
+                      Loading chart...
+                    </div>
+                  ) : chartData.length === 0 ? (
+                    <div className="flex h-full items-center justify-center text-xs text-neutral-500">
+                      No chart data available
+                    </div>
+                  ) : (
+                    <ResponsiveContainer>
+                      <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fill: '#6b7280', fontSize: 10 }}
+                          axisLine={{ stroke: '#374151' }}
+                          tickLine={false}
+                          minTickGap={48}
+                        />
+                        <YAxis
+                          tick={{ fill: '#6b7280', fontSize: 10 }}
+                          axisLine={{ stroke: '#374151' }}
+                          tickLine={false}
+                          width={48}
+                          domain={['dataMin', 'dataMax']}
+                          tickFormatter={(value) => fmtPrice(Number(value))}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: '#111827',
+                            border: '1px solid #374151',
+                            borderRadius: 6,
+                            fontSize: 12,
+                          }}
+                          labelStyle={{ color: '#9ca3af' }}
+                          formatter={(value) => [fmtPrice(Number(value)), 'Price']}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="price"
+                          stroke={stroke}
+                          strokeWidth={2}
+                          dot={false}
+                          isAnimationActive={false}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 export function PositionsTable({ enriched, loading }: Props) {
   const { remove, removing } = usePortfolio();
   const [sortKey, setSortKey] = useState<SortKey>('marketValueUSD');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [expandedPositionId, setExpandedPositionId] = useState<string | null>(null);
 
   const sorted = useMemo(() => {
     const rows = enriched.slice();
@@ -59,6 +187,10 @@ export function PositionsTable({ enriched, loading }: Props) {
       setSortKey(key);
       setSortDir(key === 'symbol' || key === 'name' || key === 'purchaseDate' ? 'asc' : 'desc');
     }
+  }
+
+  function toggleExpanded(positionId: string) {
+    setExpandedPositionId((current) => (current === positionId ? null : positionId));
   }
 
   if (!loading && enriched.length === 0) {
@@ -102,49 +234,61 @@ export function PositionsTable({ enriched, loading }: Props) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((p) => (
-              <tr key={p.id} className="border-t border-neutral-800 hover:bg-neutral-900/40">
-                <td className="px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-emerald-400">{p.symbol}</span>
-                    {p.exchange ? (
-                      <span className="text-[10px] text-neutral-500 border border-neutral-700 rounded px-1">
-                        {p.exchange}
-                      </span>
-                    ) : null}
-                  </div>
-                </td>
-                <td className="px-3 py-2 text-neutral-300 max-w-[22ch] truncate" title={p.name}>
-                  {p.name}
-                </td>
-                <td className="px-3 py-2 text-neutral-400 num">{p.purchaseDate}</td>
-                <td className="px-3 py-2 text-right num text-neutral-300">{fmtShares(p.shares)}</td>
-                <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(p.purchasePriceUSD)}</td>
-                <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(p.currentPriceUSD)}</td>
-                <td className={`px-3 py-2 text-right num ${colorClass(p.dayChangePct)}`}>
-                  {p.error ? '—' : fmtPct(p.dayChangePct)}
-                </td>
-                <td className="px-3 py-2 text-right num text-neutral-100">
-                  {p.error ? '—' : fmtUSD(p.marketValueUSD)}
-                </td>
-                <td className={`px-3 py-2 text-right num ${colorClass(p.totalGainUSD)}`}>
-                  {p.error ? '—' : fmtUSDSigned(p.totalGainUSD)}
-                </td>
-                <td className={`px-3 py-2 text-right num ${colorClass(p.totalGainPct)}`}>
-                  {p.error ? '—' : fmtPct(p.totalGainPct)}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  <button
-                    onClick={() => remove(p.id)}
-                    disabled={removing}
-                    title="Remove position"
-                    className="text-neutral-500 hover:text-red-400 text-xs px-2 py-1 rounded border border-neutral-800 hover:border-red-500/40 transition"
+            {sorted.map((p) => {
+              const isExpanded = expandedPositionId === p.id;
+              return (
+                <Fragment key={p.id}>
+                  <tr
+                    onClick={() => toggleExpanded(p.id)}
+                    className="cursor-pointer border-t border-neutral-800 hover:bg-neutral-900/40"
                   >
-                    Remove
-                  </button>
-                </td>
-              </tr>
-            ))}
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-emerald-400">{p.symbol}</span>
+                        {p.exchange ? (
+                          <span className="text-[10px] text-neutral-500 border border-neutral-700 rounded px-1">
+                            {p.exchange}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-neutral-300 max-w-[22ch] truncate" title={p.name}>
+                      {p.name}
+                    </td>
+                    <td className="px-3 py-2 text-neutral-400 num">{p.purchaseDate}</td>
+                    <td className="px-3 py-2 text-right num text-neutral-300">{fmtShares(p.shares)}</td>
+                    <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(p.purchasePriceUSD)}</td>
+                    <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(p.currentPriceUSD)}</td>
+                    <td className={`px-3 py-2 text-right num ${colorClass(p.dayChangePct)}`}>
+                      {p.error ? '—' : fmtPct(p.dayChangePct)}
+                    </td>
+                    <td className="px-3 py-2 text-right num text-neutral-100">
+                      {p.error ? '—' : fmtUSD(p.marketValueUSD)}
+                    </td>
+                    <td className={`px-3 py-2 text-right num ${colorClass(p.totalGainUSD)}`}>
+                      {p.error ? '—' : fmtUSDSigned(p.totalGainUSD)}
+                    </td>
+                    <td className={`px-3 py-2 text-right num ${colorClass(p.totalGainPct)}`}>
+                      {p.error ? '—' : fmtPct(p.totalGainPct)}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          remove(p.id);
+                        }}
+                        disabled={removing}
+                        title="Remove position"
+                        className="text-neutral-500 hover:text-red-400 text-xs px-2 py-1 rounded border border-neutral-800 hover:border-red-500/40 transition"
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                  <PositionDropdown position={p} open={isExpanded} />
+                </Fragment>
+              );
+            })}
             {loading && enriched.length === 0 ? (
               <tr>
                 <td colSpan={columns.length + 1} className="px-3 py-6 text-center text-neutral-500">

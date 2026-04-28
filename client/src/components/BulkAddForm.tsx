@@ -8,15 +8,16 @@ function todayISO(): string {
 }
 
 // Yahoo symbols can include letters, digits, dots, hyphens, equals (for FX),
-// and carets (for indices). We only accept tokens that start with a letter to
-// avoid pulling in random "$10" price mentions.
-const TICKER_REGEX = /\$([A-Za-z][A-Za-z0-9.\-=^]{0,14})/g;
+// and carets (for indices). Numeric tickers are allowed, but tokens must
+// include a letter so random "$10" price mentions are ignored.
+const TICKER_REGEX = /\$([A-Za-z0-9^][A-Za-z0-9.\-=^]{0,14})/g;
 
 function extractTickers(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const match of text.matchAll(TICKER_REGEX)) {
     const sym = match[1].toUpperCase();
+    if (!/[A-Z]/.test(sym)) continue;
     if (!seen.has(sym)) {
       seen.add(sym);
       out.push(sym);

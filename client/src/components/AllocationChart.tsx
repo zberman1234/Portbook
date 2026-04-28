@@ -27,7 +27,7 @@ export function AllocationChart({ enriched }: Props) {
   }, [enriched]);
 
   return (
-    <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 flex flex-col h-full">
+    <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 flex h-full min-h-0 flex-col overflow-hidden lg:h-[30.25rem]">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-sm font-medium text-neutral-300">Allocation</h2>
         <span className="text-xs text-neutral-500">by market value</span>
@@ -35,7 +35,7 @@ export function AllocationChart({ enriched }: Props) {
       {data.length === 0 ? (
         <div className="flex-1 min-h-64 flex items-center justify-center text-sm text-neutral-500">No data</div>
       ) : (
-        <div className="flex-1 flex flex-col lg:flex-row gap-4 items-center min-h-64">
+        <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-4 items-center lg:items-stretch overflow-hidden">
           <div className="w-full lg:w-2/3 h-64 lg:h-full min-h-64">
             <ResponsiveContainer>
               <PieChart>
@@ -70,7 +70,7 @@ export function AllocationChart({ enriched }: Props) {
               </PieChart>
             </ResponsiveContainer>
           </div>
-          <div className="w-full lg:w-1/3 lg:max-h-full max-h-64 overflow-auto">
+          <div className="w-full lg:w-1/3 h-64 lg:h-full min-h-0 overflow-y-auto pr-1">
             <ul className="space-y-1">
               {data.map((d, i) => (
                 <li key={d.name} className="flex items-center justify-between text-xs">

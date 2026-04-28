@@ -22,7 +22,7 @@ interface Props {
   positions: Position[];
 }
 
-type ChartRow = { date: string; value: number; cost: number; [key: string]: number | string };
+type ChartRow = { date: string; value: number; cost: number;[key: string]: number | string };
 
 type DateSelection = {
   startDate: string;
@@ -391,7 +391,7 @@ export function PerformanceChart({ positions }: Props) {
     <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-sm font-medium text-neutral-300">Performance</h2>
-        <span className="text-xs text-neutral-500">since {earliest}; drag chart to inspect returns</span>
+        <span className="text-xs text-neutral-500">since {earliest}</span>
       </div>
       {chartData.length === 0 ? (
         <div className="h-64 flex items-center justify-center text-sm text-neutral-500">
@@ -526,8 +526,8 @@ export function PerformanceChart({ positions }: Props) {
                       gain === null || gain === 0
                         ? 'text-neutral-300'
                         : gain > 0
-                        ? 'text-emerald-400'
-                        : 'text-red-400';
+                          ? 'text-emerald-400'
+                          : 'text-red-400';
                     return (
                       <tr key={s.key} className="border-t border-neutral-900">
                         <td className="py-1.5">
@@ -557,11 +557,7 @@ export function PerformanceChart({ positions }: Props) {
                 </tbody>
               </table>
             </div>
-          ) : (
-            <p className="mt-2 text-xs text-neutral-500">
-              Click and drag across the chart to calculate return for a custom window.
-            </p>
-          )}
+          ) : null}
           <div className="mt-4 pt-4 border-t border-neutral-800">
             <table className="w-full text-sm">
               <thead>
@@ -582,14 +578,14 @@ export function PerformanceChart({ positions }: Props) {
                     pct === null || pct === 0
                       ? 'text-neutral-300'
                       : pct > 0
-                      ? 'text-emerald-400'
-                      : 'text-red-400';
+                        ? 'text-emerald-400'
+                        : 'text-red-400';
                   const gainColor =
                     gain === null || gain === 0
                       ? 'text-neutral-300'
                       : gain > 0
-                      ? 'text-emerald-400'
-                      : 'text-red-400';
+                        ? 'text-emerald-400'
+                        : 'text-red-400';
                   return (
                     <tr key={s.label} className="border-t border-neutral-900">
                       <td className="py-1.5">

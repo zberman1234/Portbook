@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { usePortfolio } from '../hooks/usePortfolio';
 import { api } from '../lib/api';
 import { colorClass, fmtPct, fmtPrice, fmtShares, fmtUSD, fmtUSDSigned } from '../lib/format';
@@ -41,6 +41,11 @@ const columns: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
 type PriceChartRow = {
   date: string;
   price: number;
+};
+
+type DateSelection = {
+  startDate: string;
+  endDate: string;
 };
 
 function todayISO(): string {
@@ -85,8 +90,41 @@ function buildPriceChartRows(
   return rows;
 }
 
+function orderedSelection(a: string, b: string): DateSelection {
+  return a <= b ? { startDate: a, endDate: b } : { startDate: b, endDate: a };
+}
+
+function getActiveDate(state: unknown): string | null {
+  if (!state || typeof state !== 'object') return null;
+  const activeLabel = (state as { activeLabel?: unknown }).activeLabel;
+  return typeof activeLabel === 'string' ? activeLabel : null;
+}
+
+function rangePriceReturn(rows: PriceChartRow[], startDate: string, endDate: string) {
+  const windowRows = rows.filter((row) => row.date >= startDate && row.date <= endDate);
+  const start = windowRows[0];
+  const end = windowRows[windowRows.length - 1];
+  if (!start || !end || start.price <= 0) return null;
+  const gain = end.price - start.price;
+  return {
+    gain,
+    pct: gain / start.price,
+    startPrice: start.price,
+    endPrice: end.price,
+  };
+}
+
+function fmtPriceSigned(n: number | undefined | null): string {
+  if (n === undefined || n === null || !Number.isFinite(n)) return '—';
+  const sign = n > 0 ? '+' : n < 0 ? '-' : '';
+  return `${sign}${fmtPrice(Math.abs(n))}`;
+}
+
 function PositionDropdown({ position, open }: { position: EnrichedPosition; open: boolean }) {
   const today = todayISO();
+  const [dragStartDate, setDragStartDate] = useState<string | null>(null);
+  const [dragEndDate, setDragEndDate] = useState<string | null>(null);
+  const [selectedRange, setSelectedRange] = useState<DateSelection | null>(null);
   const historyQuery = useQuery({
     queryKey: ['history', position.symbol, position.purchaseDate],
     queryFn: () => api.history(position.symbol, position.purchaseDate, today),
@@ -106,18 +144,55 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
   );
   const stroke =
     position.dayChangePct === 0 ? '#d4d4d4' : position.dayChangePct > 0 ? '#10b981' : '#f87171';
+  const activeRange =
+    dragStartDate && dragEndDate ? orderedSelection(dragStartDate, dragEndDate) : selectedRange;
+
+  const selectedRangeStats = useMemo(() => {
+    if (!selectedRange) return null;
+    const ret = rangePriceReturn(chartData, selectedRange.startDate, selectedRange.endDate);
+    return {
+      ...selectedRange,
+      ret,
+      valueGain: ret ? ret.gain * position.shares : null,
+    };
+  }, [chartData, position.shares, selectedRange]);
+
+  const handleMouseDown = (state: unknown) => {
+    const date = getActiveDate(state);
+    if (!date) return;
+    setDragStartDate(date);
+    setDragEndDate(date);
+  };
+
+  const handleMouseMove = (state: unknown) => {
+    if (!dragStartDate) return;
+    const date = getActiveDate(state);
+    if (date) setDragEndDate(date);
+  };
+
+  const handleMouseUp = (state: unknown) => {
+    if (!dragStartDate) return;
+    const date = getActiveDate(state) ?? dragEndDate ?? dragStartDate;
+    const range = orderedSelection(dragStartDate, date);
+    setSelectedRange(range.startDate === range.endDate ? null : range);
+    setDragStartDate(null);
+    setDragEndDate(null);
+  };
+
+  const handleMouseLeave = () => {
+    setDragStartDate(null);
+    setDragEndDate(null);
+  };
 
   return (
     <tr
-      className={`${
-        open ? 'border-t border-neutral-900 bg-neutral-900/20' : 'border-t border-transparent'
-      }`}
+      className={`${open ? 'border-t border-neutral-900 bg-neutral-900/20' : 'border-t border-transparent'
+        }`}
     >
       <td colSpan={columns.length + 1} className="p-0">
         <div
-          className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${
-            open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
-          }`}
+          className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+            }`}
         >
           <div className="overflow-hidden">
             <div className="px-3 py-3">
@@ -125,9 +200,6 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <div>
                     <div className="text-xs font-medium text-neutral-300">Price history</div>
-                    <div className="text-[11px] text-neutral-500">
-                      Updated through {position.quotePriceDate ?? 'latest close'}
-                    </div>
                   </div>
                   <div className="text-right">
                     <div className="text-xs text-neutral-500">{position.currency}</div>
@@ -136,7 +208,7 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                     </div>
                   </div>
                 </div>
-                <div className="h-44">
+                <div className="h-44 cursor-crosshair select-none">
                   {position.error ? (
                     <div className="flex h-full items-center justify-center rounded border border-amber-700/40 bg-amber-900/20 px-3 text-center text-xs text-amber-300/90">
                       Pricing unavailable for this symbol/date: {position.error}
@@ -151,7 +223,14 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                     </div>
                   ) : (
                     <ResponsiveContainer>
-                      <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+                      <LineChart
+                        data={chartData}
+                        margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
+                        onMouseDown={handleMouseDown}
+                        onMouseMove={handleMouseMove}
+                        onMouseUp={handleMouseUp}
+                        onMouseLeave={handleMouseLeave}
+                      >
                         <XAxis
                           dataKey="date"
                           tick={{ fill: '#6b7280', fontSize: 10 }}
@@ -177,6 +256,16 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                           labelStyle={{ color: '#9ca3af' }}
                           formatter={(value) => [fmtPrice(Number(value)), 'Price']}
                         />
+                        {activeRange && activeRange.startDate !== activeRange.endDate ? (
+                          <ReferenceArea
+                            x1={activeRange.startDate}
+                            x2={activeRange.endDate}
+                            stroke="#a78bfa"
+                            strokeOpacity={0.7}
+                            fill="#8b5cf6"
+                            fillOpacity={0.12}
+                          />
+                        ) : null}
                         <Line
                           type="monotone"
                           dataKey="price"
@@ -189,6 +278,55 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                     </ResponsiveContainer>
                   )}
                 </div>
+                {selectedRangeStats ? (
+                  <div className="mt-3 rounded border border-neutral-800 bg-neutral-900/40 p-2">
+                    <div className="mb-2 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-medium text-neutral-300">Selected window</div>
+                        <div className="text-[11px] text-neutral-500">
+                          {selectedRangeStats.startDate} to {selectedRangeStats.endDate}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:border-neutral-500 hover:text-neutral-100"
+                        onClick={() => setSelectedRange(null)}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="grid gap-2 text-xs sm:grid-cols-4">
+                      <div>
+                        <div className="text-[11px] text-neutral-500">Return</div>
+                        <div className={`num ${colorClass(selectedRangeStats.ret?.pct)}`}>
+                          {selectedRangeStats.ret ? fmtPct(selectedRangeStats.ret.pct) : '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-neutral-500">Price change</div>
+                        <div className={`num ${colorClass(selectedRangeStats.ret?.gain)}`}>
+                          {selectedRangeStats.ret ? fmtPriceSigned(selectedRangeStats.ret.gain) : '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-neutral-500">Position G/L</div>
+                        <div className={`num ${colorClass(selectedRangeStats.valueGain)}`}>
+                          {fmtUSDSigned(selectedRangeStats.valueGain)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-neutral-500">Start / end</div>
+                        <div className="num text-neutral-300">
+                          {selectedRangeStats.ret
+                            ? `${fmtPrice(selectedRangeStats.ret.startPrice)} -> ${fmtPrice(
+                              selectedRangeStats.ret.endPrice,
+                            )}`
+                            : '—'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
@@ -256,9 +394,8 @@ export function PositionsTable({ enriched, loading }: Props) {
                 <th
                   key={c.key}
                   onClick={() => onSort(c.key)}
-                  className={`px-3 py-2 cursor-pointer select-none hover:text-neutral-200 ${
-                    c.align === 'right' ? 'text-right' : 'text-left'
-                  }`}
+                  className={`px-3 py-2 cursor-pointer select-none hover:text-neutral-200 ${c.align === 'right' ? 'text-right' : 'text-left'
+                    }`}
                 >
                   <span className="inline-flex items-center gap-1">
                     {c.label}

@@ -42,8 +42,12 @@ export function BulkAddForm() {
   const [rows, setRows] = useState<Row[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
   const detected = useMemo(() => extractTickers(text), [text]);
+  const PREVIEW_COUNT = 8;
+  const hasOverflow = detected.length > PREVIEW_COUNT;
+  const visibleTickers = expanded || !hasOverflow ? detected : detected.slice(0, PREVIEW_COUNT);
 
   function updateRow(ticker: string, patch: Partial<Row>) {
     setRows((prev) => prev.map((r) => (r.ticker === ticker ? { ...r, ...patch } : r)));
@@ -173,12 +177,25 @@ export function BulkAddForm() {
           <div className="text-xs text-neutral-500">
             Detected{' '}
             <span className="text-neutral-300 font-medium">{detected.length}</span>{' '}
-            unique ticker{detected.length === 1 ? '' : 's'}
+            unique ticker{detected.length === 1 ? '' : 's'}:
             {detected.length > 0 ? (
-              <span className="text-neutral-600">
-                {' '}· {detected.slice(0, 8).map((t) => `$${t}`).join(' ')}
-                {detected.length > 8 ? ` +${detected.length - 8} more` : ''}
-              </span>
+              hasOverflow ? (
+                <button
+                  type="button"
+                  onClick={() => setExpanded((v) => !v)}
+                  className="text-left text-neutral-500 hover:text-neutral-300 cursor-pointer"
+                  title={expanded ? 'Click to collapse' : 'Click to show all'}
+                >
+                  {' '}{visibleTickers.map((t) => `$${t}`).join(' ')}
+                  {expanded
+                    ? ' (show less)'
+                    : ` +${detected.length - PREVIEW_COUNT} more`}
+                </button>
+              ) : (
+                <span className="text-neutral-500">
+                  {' '}{detected.map((t) => `$${t}`).join(' ')}
+                </span>
+              )
             ) : null}
           </div>
           <div className="flex gap-2 mt-auto">

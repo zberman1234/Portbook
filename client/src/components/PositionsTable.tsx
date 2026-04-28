@@ -55,8 +55,13 @@ function normalizeNative(price: number | null, currency: string | undefined): nu
   return price;
 }
 
-function buildPriceChartRows(history: HistoryRow[] | undefined, currency: string): PriceChartRow[] {
-  return (history ?? [])
+function buildPriceChartRows(
+  history: HistoryRow[] | undefined,
+  currency: string,
+  quotePriceDate: string | null,
+  currentPriceNative: number,
+): PriceChartRow[] {
+  const rows = (history ?? [])
     .map((row) => {
       const price = normalizeNative(row.adjclose ?? row.close, currency);
       return typeof price === 'number' && Number.isFinite(price)
@@ -64,6 +69,20 @@ function buildPriceChartRows(history: HistoryRow[] | undefined, currency: string
         : null;
     })
     .filter((row): row is PriceChartRow => row !== null);
+
+  if (
+    quotePriceDate &&
+    Number.isFinite(currentPriceNative) &&
+    currentPriceNative > 0
+  ) {
+    const quoteRow = { date: quotePriceDate, price: currentPriceNative };
+    const existingIndex = rows.findIndex((row) => row.date === quotePriceDate);
+    if (existingIndex >= 0) rows[existingIndex] = quoteRow;
+    else rows.push(quoteRow);
+    rows.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  return rows;
 }
 
 function PositionDropdown({ position, open }: { position: EnrichedPosition; open: boolean }) {
@@ -76,10 +95,17 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
   });
 
   const chartData = useMemo(
-    () => buildPriceChartRows(historyQuery.data, position.currency),
-    [historyQuery.data, position.currency],
+    () =>
+      buildPriceChartRows(
+        historyQuery.data,
+        position.currency,
+        position.quotePriceDate,
+        position.currentPriceNative,
+      ),
+    [historyQuery.data, position.currency, position.quotePriceDate, position.currentPriceNative],
   );
-  const stroke = position.totalGainUSD >= 0 ? '#10b981' : '#f87171';
+  const stroke =
+    position.dayChangePct === 0 ? '#d4d4d4' : position.dayChangePct > 0 ? '#10b981' : '#f87171';
 
   return (
     <tr
@@ -96,9 +122,19 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
           <div className="overflow-hidden">
             <div className="px-3 py-3">
               <div className="rounded-lg border border-neutral-800 bg-neutral-950/70 p-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-xs font-medium text-neutral-300">Price history</div>
-                  <div className="text-xs text-neutral-500">{position.currency}</div>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-medium text-neutral-300">Price history</div>
+                    <div className="text-[11px] text-neutral-500">
+                      Updated through {position.quotePriceDate ?? 'latest close'}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xs text-neutral-500">{position.currency}</div>
+                    <div className={`text-xs num ${colorClass(position.dayChangePct)}`}>
+                      Today {position.error ? '—' : fmtPct(position.dayChangePct)}
+                    </div>
+                  </div>
                 </div>
                 <div className="h-44">
                   {position.error ? (

@@ -43,6 +43,8 @@ export interface HistoryRow {
 
 export interface EnrichedPosition extends Position {
   shares: number;
+  purchasePriceDate: string;
+  quotePriceDate: string | null;
   purchasePriceUSD: number;
   purchasePriceNative: number;
   currentPriceUSD: number;

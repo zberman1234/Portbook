@@ -56,6 +56,8 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
   const base: EnrichedPosition = {
     ...position,
     shares: 0,
+    purchasePriceDate: position.purchaseDate,
+    quotePriceDate: null,
     purchasePriceUSD: 0,
     purchasePriceNative: 0,
     currentPriceUSD: 0,
@@ -90,6 +92,7 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
     return {
       ...base,
       shares,
+      purchasePriceDate: bundle.purchaseClose.date,
       purchasePriceNative: buyNative.price,
       purchasePriceUSD,
       error: 'No current quote',
@@ -107,12 +110,17 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
   const marketValueUSD = shares * currentPriceUSD;
   const totalGainUSD = marketValueUSD - costBasis;
   const totalGainPct = totalGainUSD / costBasis;
-  const dayChangePct =
+  const quotePriceDate = typeof q?.regularMarketTime === 'string' ? q.regularMarketTime.slice(0, 10) : null;
+  const quoteDayChangePct =
     typeof q?.regularMarketChangePercent === 'number' ? q.regularMarketChangePercent / 100 : 0;
+  const dayChangePct =
+    quotePriceDate && bundle.purchaseClose.date >= quotePriceDate ? totalGainPct : quoteDayChangePct;
 
   return {
     ...position,
     shares,
+    purchasePriceDate: bundle.purchaseClose.date,
+    quotePriceDate,
     purchasePriceNative: buyNative.price,
     purchasePriceUSD,
     currentPriceNative: currentNative.price,
@@ -142,11 +150,14 @@ export function totals(positions: EnrichedPosition[]): Totals {
   const gain = value - cost;
   const gainPct = cost > 0 ? gain / cost : 0;
   const dayChangeUSD = valid.reduce((s, p) => {
-    // approximate: market value * day pct / (1 + day pct) = prior-day value delta
+    const quoteDate = p.quotePriceDate;
+    if (quoteDate && p.purchasePriceDate >= quoteDate) return s + p.totalGainUSD;
+
+    // Approximate quote-day delta from current value and quoted day percent.
     const priorValue = p.marketValueUSD / (1 + p.dayChangePct);
     return s + (p.marketValueUSD - priorValue);
   }, 0);
-  const priorValue = valid.reduce((s, p) => s + p.marketValueUSD / (1 + p.dayChangePct), 0);
+  const priorValue = value - dayChangeUSD;
   const dayChangePct = priorValue > 0 ? dayChangeUSD / priorValue : 0;
   return { cost, value, gain, gainPct, dayChangeUSD, dayChangePct, validCount: valid.length };
 }

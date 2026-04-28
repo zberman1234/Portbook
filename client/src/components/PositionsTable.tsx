@@ -418,14 +418,10 @@ export function PositionsTable({ enriched, loading }: Props) {
                     className="cursor-pointer border-t border-neutral-800 hover:bg-neutral-900/40"
                   >
                     <td className="px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-emerald-400">{p.symbol}</span>
-                        {p.exchange ? (
-                          <span className="text-[10px] text-neutral-500 border border-neutral-700 rounded px-1">
-                            {p.exchange}
-                          </span>
-                        ) : null}
-                      </div>
+                      <div className="font-mono text-emerald-400">{p.symbol}</div>
+                      {p.exchange ? (
+                        <div className="text-[10px] leading-tight text-neutral-500">{p.exchange}</div>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2 text-neutral-300 max-w-[22ch] truncate" title={p.name}>
                       {p.name}

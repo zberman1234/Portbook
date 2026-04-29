@@ -388,7 +388,7 @@ export function PerformanceChart({ positions }: Props) {
   };
 
   return (
-    <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5">
+    <div className="h-full rounded-xl border border-neutral-800 bg-neutral-950/60 p-5">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-sm font-medium text-neutral-300">Performance</h2>
         <span className="text-xs text-neutral-500">since {earliest}</span>

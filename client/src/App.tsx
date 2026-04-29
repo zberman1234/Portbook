@@ -83,7 +83,7 @@ export default function App() {
         <PortfolioSummary enriched={enriched} loading={positionsLoading || pricesLoading} />
 
         {positions.length > 0 ? (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:auto-rows-[30.25rem]">
             <AllocationChart enriched={enriched} />
             <PerformanceChart positions={positions} />
           </div>

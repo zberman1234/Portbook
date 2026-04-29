@@ -27,7 +27,7 @@ export function AllocationChart({ enriched }: Props) {
   }, [enriched]);
 
   return (
-    <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 flex h-full min-h-0 flex-col overflow-hidden lg:h-[30.25rem]">
+    <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-sm font-medium text-neutral-300">Allocation</h2>
         <span className="text-xs text-neutral-500">by market value</span>

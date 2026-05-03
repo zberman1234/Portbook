@@ -27,6 +27,7 @@ function extractTickers(text: string): string[] {
 }
 
 type RowStatus = 'pending' | 'adding' | 'added' | 'skipped' | 'failed';
+type BuyMode = 'amount' | 'shares';
 
 interface Row {
   ticker: string;
@@ -39,7 +40,10 @@ export function BulkAddForm() {
   const { add } = usePortfolio();
   const [text, setText] = useState('');
   const [date, setDate] = useState(todayISO());
+  const [buyMode, setBuyMode] = useState<BuyMode>('amount');
   const [amount, setAmount] = useState(String(DEFAULT_COST_BASIS_USD));
+  const [shares, setShares] = useState('');
+  const [purchasePrice, setPurchasePrice] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,11 +70,35 @@ export function BulkAddForm() {
       setError('Purchase date cannot be in the future.');
       return;
     }
-    const costBasisUSD = Number(amount);
-    if (!Number.isFinite(costBasisUSD) || costBasisUSD <= 0) {
-      setError('Please enter an investment amount greater than $0.');
+    const buyFields =
+      buyMode === 'amount'
+        ? (() => {
+            const costBasisUSD = Number(amount);
+            if (!Number.isFinite(costBasisUSD) || costBasisUSD <= 0) {
+              setError('Please enter an investment amount greater than $0.');
+              return null;
+            }
+            return { costBasisUSD };
+          })()
+        : (() => {
+            const shareQuantity = Number(shares);
+            if (!Number.isFinite(shareQuantity) || shareQuantity <= 0) {
+              setError('Please enter a share quantity greater than 0.');
+              return null;
+            }
+            return { shares: shareQuantity };
+          })();
+    if (!buyFields) return;
+
+    const purchasePriceValue = purchasePrice.trim() === '' ? undefined : Number(purchasePrice);
+    if (
+      purchasePriceValue !== undefined &&
+      (!Number.isFinite(purchasePriceValue) || purchasePriceValue <= 0)
+    ) {
+      setError('Please enter a purchase price greater than $0, or leave it blank.');
       return;
     }
+
     if (detected.length === 0) {
       setError('No $TICKERs found. Make sure each ticker is preceded by a $ (e.g. $AAPL).');
       return;
@@ -111,7 +139,8 @@ export function BulkAddForm() {
           exchange,
           currency,
           purchaseDate: date,
-          costBasisUSD,
+          ...buyFields,
+          ...(purchasePriceValue !== undefined ? { purchasePriceUSD: purchasePriceValue } : {}),
         });
         updateRow(ticker, {
           status: 'added',
@@ -132,6 +161,8 @@ export function BulkAddForm() {
   function handleClear() {
     setText('');
     setAmount(String(DEFAULT_COST_BASIS_USD));
+    setShares('');
+    setPurchasePrice('');
     setRows([]);
     setError(null);
   }
@@ -164,14 +195,37 @@ export function BulkAddForm() {
             />
           </div>
           <div>
-            <label className="text-xs text-neutral-500 block mb-1">Amount per ticker (USD)</label>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <label className="text-xs text-neutral-500">
+                {buyMode === 'amount' ? 'Amount per ticker (USD)' : 'Shares per ticker'}
+              </label>
+              <BuyModeToggle mode={buyMode} onChange={setBuyMode} />
+            </div>
             <input
               type="number"
-              value={amount}
+              value={buyMode === 'amount' ? amount : shares}
+              min={buyMode === 'amount' ? '0.01' : '0.000001'}
+              step={buyMode === 'amount' ? '0.01' : '0.000001'}
+              inputMode="decimal"
+              placeholder={buyMode === 'amount' ? '100.00' : '10'}
+              onChange={(e) =>
+                buyMode === 'amount' ? setAmount(e.target.value) : setShares(e.target.value)
+              }
+              className="w-full px-3 py-2 rounded-md bg-neutral-900 border border-neutral-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-neutral-500 block mb-1">
+              Price/share USD per ticker (optional)
+            </label>
+            <input
+              type="number"
+              value={purchasePrice}
               min="0.01"
               step="0.01"
               inputMode="decimal"
-              onChange={(e) => setAmount(e.target.value)}
+              placeholder="Yahoo close"
+              onChange={(e) => setPurchasePrice(e.target.value)}
               className="w-full px-3 py-2 rounded-md bg-neutral-900 border border-neutral-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 text-sm"
             />
           </div>
@@ -259,4 +313,29 @@ function StatusDot({ status }: { status: RowStatus }) {
             ? 'bg-neutral-500'
             : 'bg-neutral-700';
   return <span className={`h-2 w-2 rounded-full shrink-0 ${cls}`} />;
+}
+
+function BuyModeToggle({ mode, onChange }: { mode: BuyMode; onChange: (m: BuyMode) => void }) {
+  const base = 'px-1.5 py-0.5 rounded text-[10px] font-medium transition border';
+  const active = 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300';
+  const idle =
+    'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-neutral-200 hover:border-neutral-700';
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        className={`${base} ${mode === 'amount' ? active : idle}`}
+        onClick={() => onChange('amount')}
+      >
+        USD
+      </button>
+      <button
+        type="button"
+        className={`${base} ${mode === 'shares' ? active : idle}`}
+        onClick={() => onChange('shares')}
+      >
+        Shares
+      </button>
+    </div>
+  );
 }

@@ -14,7 +14,7 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '../lib/api';
-import { costBasisUSD } from '../lib/calc';
+import { costBasisUSD, explicitPurchasePriceUSD, purchaseLot } from '../lib/calc';
 import { fmtPct, fmtUSD, fmtUSDSigned } from '../lib/format';
 import type { HistoryRow, Position } from '../types';
 
@@ -194,17 +194,26 @@ export function PerformanceChart({ positions }: Props) {
     });
     const allDates = Array.from(datesSet).sort();
 
-    type Snap = { shares: number; usdByDate: Map<string, number> };
+    type Snap = { shares: number; costBasisUSD: number; usdByDate: Map<string, number> };
 
     const snaps: (Snap | null)[] = positions.map((p, i) => {
       const buyClose = buyCloseQueries[i]?.data;
       const buyFxRate = buyFxQueries[i]?.data?.rate ?? (p.currency.toUpperCase() === 'USD' ? 1 : null);
-      if (!buyClose || buyFxRate === null || buyFxRate === undefined) return null;
+      const priceOverride = explicitPurchasePriceUSD(p);
+      if (
+        priceOverride === null &&
+        (!buyClose || buyFxRate === null || buyFxRate === undefined)
+      ) {
+        return null;
+      }
 
-      const buyNative = normalizeNative(buyClose.close, p.currency) ?? 0;
-      const purchasePriceUSD = buyNative * buyFxRate;
-      if (!Number.isFinite(purchasePriceUSD) || purchasePriceUSD <= 0) return null;
-      const shares = costBasisUSD(p) / purchasePriceUSD;
+      const buyNative = buyClose ? normalizeNative(buyClose.close, p.currency) ?? 0 : null;
+      const purchasePriceUSD =
+        buyNative !== null && buyFxRate !== null && buyFxRate !== undefined
+          ? buyNative * buyFxRate
+          : null;
+      const lot = purchaseLot(p, purchasePriceUSD);
+      if (!lot) return null;
 
       const history = historyQueries[i]?.data ?? [];
       const fxHistory = fxSeriesQueries[i]?.data ?? [];
@@ -219,7 +228,7 @@ export function PerformanceChart({ positions }: Props) {
       }
 
       const usdByDate = new Map<string, number>();
-      let lastFx = buyFxRate;
+      let lastFx = buyFxRate ?? null;
       history.forEach((r) => {
         const closeNative = normalizeNative(r.adjclose ?? r.close, p.currency);
         if (closeNative === null) return;
@@ -227,21 +236,25 @@ export function PerformanceChart({ positions }: Props) {
           const fxOnDay = fxByDate.get(r.date);
           if (typeof fxOnDay === 'number') lastFx = fxOnDay;
         }
+        if (lastFx === null) return;
         const priceUSD = closeNative * lastFx;
-        usdByDate.set(r.date, priceUSD * shares);
+        usdByDate.set(r.date, priceUSD * lot.shares);
       });
 
-      return { shares, usdByDate };
+      return { shares: lot.shares, costBasisUSD: lot.costBasisUSD, usdByDate };
     });
+
+    const costBasisByPosition = positions.map((p, i) => snaps[i]?.costBasisUSD ?? costBasisUSD(p));
 
     type BenchSnap = { sharesPerPosition: (number | null)[]; priceByDate: Map<string, number>; sortedDates: string[] };
     const benchSnaps: BenchSnap[] = benchmarkQueries.map((q) => {
       const priceByDate = buildPriceMap(q.data);
       const sortedDates = Array.from(priceByDate.keys()).sort();
-      const sharesPerPosition = positions.map((p) => {
+      const sharesPerPosition = positions.map((p, i) => {
         const buyPrice = firstPriceOnOrAfter(sortedDates, priceByDate, p.purchaseDate);
         if (buyPrice === null || buyPrice <= 0) return null;
-        return costBasisUSD(p) / buyPrice;
+        const costBasis = costBasisByPosition[i];
+        return costBasis > 0 ? costBasis / buyPrice : null;
       });
       return { sharesPerPosition, priceByDate, sortedDates };
     });
@@ -256,7 +269,7 @@ export function PerformanceChart({ positions }: Props) {
         const p = positions[i];
         const active = p.purchaseDate <= d;
         if (!active) continue;
-        cost += costBasisUSD(p);
+        cost += costBasisByPosition[i];
         const snap = snaps[i];
         if (!snap) continue;
         const v = snap.usdByDate.get(d);

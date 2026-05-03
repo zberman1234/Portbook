@@ -44,6 +44,8 @@ export const api = {
       currency?: string;
       purchaseDate: string;
       costBasisUSD?: number;
+      shares?: number;
+      purchasePriceUSD?: number;
     },
   ) =>
     http<{ position: Position; portfolios: Portfolio[] }>(

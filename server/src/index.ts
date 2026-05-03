@@ -23,12 +23,20 @@ const app = express();
 const PORT = Number(process.env.PORT ?? 8787);
 const DEFAULT_COST_BASIS_USD = 100;
 
-function parseCostBasisUSD(value: unknown): number | null {
-  if (value === undefined || value === null || value === '') {
-    return DEFAULT_COST_BASIS_USD;
-  }
+function hasProvidedValue(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function parsePositiveNumber(value: unknown): number | null {
   const amount = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
   return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function parseCostBasisUSD(value: unknown): number | null {
+  if (!hasProvidedValue(value)) {
+    return DEFAULT_COST_BASIS_USD;
+  }
+  return parsePositiveNumber(value);
 }
 
 app.use(cors());
@@ -105,6 +113,8 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
       currency,
       purchaseDate,
       costBasisUSD: rawCostBasisUSD,
+      shares: rawShares,
+      purchasePriceUSD: rawPurchasePriceUSD,
     } = req.body as Partial<Position>;
 
     if (!symbol || typeof symbol !== 'string') {
@@ -115,10 +125,36 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
       res.status(400).json({ error: 'purchaseDate must be YYYY-MM-DD' });
       return;
     }
-    const costBasisUSD = parseCostBasisUSD(rawCostBasisUSD);
-    if (costBasisUSD === null) {
-      res.status(400).json({ error: 'costBasisUSD must be a positive number' });
+    const hasCostBasis = hasProvidedValue(rawCostBasisUSD);
+    const hasShares = hasProvidedValue(rawShares);
+    if (hasCostBasis && hasShares) {
+      res.status(400).json({ error: 'provide either costBasisUSD or shares, not both' });
       return;
+    }
+
+    const purchasePriceUSD = hasProvidedValue(rawPurchasePriceUSD)
+      ? parsePositiveNumber(rawPurchasePriceUSD)
+      : undefined;
+    if (purchasePriceUSD === null) {
+      res.status(400).json({ error: 'purchasePriceUSD must be a positive number' });
+      return;
+    }
+
+    let buyFields: Pick<Position, 'costBasisUSD' | 'shares'>;
+    if (hasShares) {
+      const shares = parsePositiveNumber(rawShares);
+      if (shares === null) {
+        res.status(400).json({ error: 'shares must be a positive number' });
+        return;
+      }
+      buyFields = { shares };
+    } else {
+      const costBasisUSD = parseCostBasisUSD(rawCostBasisUSD);
+      if (costBasisUSD === null) {
+        res.status(400).json({ error: 'costBasisUSD must be a positive number' });
+        return;
+      }
+      buyFields = { costBasisUSD };
     }
 
     // Preserve case on currency: Yahoo uses lowercase suffixes (GBp, ZAc, ILA)
@@ -132,7 +168,8 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
       exchange: exchange ?? '',
       currency: rawCurrency || 'USD',
       purchaseDate,
-      costBasisUSD,
+      ...buyFields,
+      ...(purchasePriceUSD !== undefined ? { purchasePriceUSD } : {}),
       createdAt: new Date().toISOString(),
     };
     try {

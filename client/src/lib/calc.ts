@@ -2,11 +2,58 @@ import type { EnrichedPosition, Position, QuoteSnapshot } from '../types';
 
 export const DEFAULT_COST_BASIS_USD = 100;
 
-export function costBasisUSD(position: Pick<Position, 'costBasisUSD'>): number {
+export function explicitShares(position: Pick<Position, 'shares'>): number | null {
+  const shares = position.shares;
+  return typeof shares === 'number' && Number.isFinite(shares) && shares > 0 ? shares : null;
+}
+
+export function explicitPurchasePriceUSD(
+  position: Pick<Position, 'purchasePriceUSD'>,
+): number | null {
+  const price = position.purchasePriceUSD;
+  return typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : null;
+}
+
+export function costBasisUSD(
+  position: Pick<Position, 'costBasisUSD' | 'shares' | 'purchasePriceUSD'>,
+): number {
+  const shareQuantity = explicitShares(position);
+  const purchasePrice = explicitPurchasePriceUSD(position);
+  if (shareQuantity !== null) {
+    return purchasePrice !== null ? shareQuantity * purchasePrice : 0;
+  }
   const amount = position.costBasisUSD;
   return typeof amount === 'number' && Number.isFinite(amount) && amount > 0
     ? amount
     : DEFAULT_COST_BASIS_USD;
+}
+
+export function purchaseLot(
+  position: Pick<Position, 'costBasisUSD' | 'shares' | 'purchasePriceUSD'>,
+  fallbackPurchasePriceUSD: number | null | undefined,
+): { shares: number; costBasisUSD: number } | null {
+  const purchasePriceUSD = explicitPurchasePriceUSD(position) ?? fallbackPurchasePriceUSD;
+  if (
+    typeof purchasePriceUSD !== 'number' ||
+    !Number.isFinite(purchasePriceUSD) ||
+    purchasePriceUSD <= 0
+  ) {
+    return null;
+  }
+
+  const shareQuantity = explicitShares(position);
+  if (shareQuantity !== null) {
+    return {
+      shares: shareQuantity,
+      costBasisUSD: shareQuantity * purchasePriceUSD,
+    };
+  }
+
+  const costBasis = costBasisUSD(position);
+  return {
+    shares: costBasis / purchasePriceUSD,
+    costBasisUSD: costBasis,
+  };
 }
 
 export interface PriceBundle {
@@ -52,7 +99,8 @@ function normalizeNativePrice(
 }
 
 export function enrich(position: Position, bundle: PriceBundle): EnrichedPosition {
-  const costBasis = costBasisUSD(position);
+  const fallbackCostBasis = costBasisUSD(position);
+  const priceOverride = explicitPurchasePriceUSD(position);
   const base: EnrichedPosition = {
     ...position,
     shares: 0,
@@ -62,39 +110,42 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
     purchasePriceNative: 0,
     currentPriceUSD: 0,
     currentPriceNative: 0,
-    costBasisUSD: costBasis,
+    costBasisUSD: fallbackCostBasis,
     marketValueUSD: 0,
     totalGainUSD: 0,
     totalGainPct: 0,
     dayChangePct: 0,
   };
 
-  if (!bundle.purchaseClose) {
+  if (!bundle.purchaseClose && priceOverride === null) {
     return { ...base, error: 'No price data on or near purchase date' };
   }
 
-  const buyNative = normalizeNativePrice(
-    bundle.purchaseClose.close,
-    position.currency,
-    position.symbol,
-  );
+  const buyNative = bundle.purchaseClose
+    ? normalizeNativePrice(
+        bundle.purchaseClose.close,
+        position.currency,
+        position.symbol,
+      )
+    : null;
   const buyFx = bundle.purchaseFx ?? 1;
-  const purchasePriceUSD = buyNative.price * buyFx;
-  if (!Number.isFinite(purchasePriceUSD) || purchasePriceUSD <= 0) {
+  const fallbackPurchasePriceUSD = buyNative ? buyNative.price * buyFx : null;
+  const resolvedPurchasePriceUSD = priceOverride ?? fallbackPurchasePriceUSD;
+  const lot = purchaseLot(position, fallbackPurchasePriceUSD);
+  if (!lot) {
     return { ...base, error: 'Invalid purchase price' };
   }
-
-  const shares = costBasis / purchasePriceUSD;
 
   const q = bundle.quote;
   const currentNativeRaw = q?.regularMarketPrice ?? null;
   if (currentNativeRaw === null || currentNativeRaw === undefined) {
     return {
       ...base,
-      shares,
-      purchasePriceDate: bundle.purchaseClose.date,
-      purchasePriceNative: buyNative.price,
-      purchasePriceUSD,
+      shares: lot.shares,
+      purchasePriceDate: bundle.purchaseClose?.date ?? position.purchaseDate,
+      purchasePriceNative: buyNative?.price ?? resolvedPurchasePriceUSD ?? 0,
+      purchasePriceUSD: resolvedPurchasePriceUSD ?? 0,
+      costBasisUSD: lot.costBasisUSD,
       error: 'No current quote',
     };
   }
@@ -107,25 +158,26 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
   const curFx = bundle.currentFx ?? 1;
   const currentPriceUSD = currentNative.price * curFx;
 
-  const marketValueUSD = shares * currentPriceUSD;
-  const totalGainUSD = marketValueUSD - costBasis;
-  const totalGainPct = totalGainUSD / costBasis;
+  const marketValueUSD = lot.shares * currentPriceUSD;
+  const totalGainUSD = marketValueUSD - lot.costBasisUSD;
+  const totalGainPct = totalGainUSD / lot.costBasisUSD;
   const quotePriceDate = typeof q?.regularMarketTime === 'string' ? q.regularMarketTime.slice(0, 10) : null;
   const quoteDayChangePct =
     typeof q?.regularMarketChangePercent === 'number' ? q.regularMarketChangePercent / 100 : 0;
+  const purchasePriceDate = bundle.purchaseClose?.date ?? position.purchaseDate;
   const dayChangePct =
-    quotePriceDate && bundle.purchaseClose.date >= quotePriceDate ? totalGainPct : quoteDayChangePct;
+    quotePriceDate && purchasePriceDate >= quotePriceDate ? totalGainPct : quoteDayChangePct;
 
   return {
     ...position,
-    shares,
-    purchasePriceDate: bundle.purchaseClose.date,
+    shares: lot.shares,
+    purchasePriceDate,
     quotePriceDate,
-    purchasePriceNative: buyNative.price,
-    purchasePriceUSD,
+    purchasePriceNative: buyNative?.price ?? resolvedPurchasePriceUSD ?? 0,
+    purchasePriceUSD: resolvedPurchasePriceUSD ?? 0,
     currentPriceNative: currentNative.price,
     currentPriceUSD,
-    costBasisUSD: costBasis,
+    costBasisUSD: lot.costBasisUSD,
     marketValueUSD,
     totalGainUSD,
     totalGainPct,

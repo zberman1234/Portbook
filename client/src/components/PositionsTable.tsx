@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { usePortfolio } from '../hooks/usePortfolio';
 import { api } from '../lib/api';
 import { colorClass, fmtPct, fmtPrice, fmtShares, fmtUSD, fmtUSDSigned } from '../lib/format';
@@ -43,13 +43,59 @@ type PriceChartRow = {
   price: number;
 };
 
-type DateSelection = {
-  startDate: string;
-  endDate: string;
-};
+type TimeWindowKey = '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | '2Y' | '5Y' | 'ALL';
+
+const TIME_WINDOWS: { key: TimeWindowKey; label: string }[] = [
+  { key: '1D', label: '1D' },
+  { key: '1W', label: '1W' },
+  { key: '1M', label: '1M' },
+  { key: '3M', label: '3M' },
+  { key: '6M', label: '6M' },
+  { key: '1Y', label: '1Y' },
+  { key: '2Y', label: '2Y' },
+  { key: '5Y', label: '5Y' },
+  { key: 'ALL', label: 'ALL' },
+];
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function shiftDateISO(dateISO: string, amount: number, unit: 'day' | 'month' | 'year'): string {
+  const date = new Date(`${dateISO}T00:00:00Z`);
+  if (unit === 'day') date.setUTCDate(date.getUTCDate() + amount);
+  if (unit === 'month') date.setUTCMonth(date.getUTCMonth() + amount);
+  if (unit === 'year') date.setUTCFullYear(date.getUTCFullYear() + amount);
+  return date.toISOString().slice(0, 10);
+}
+
+function windowStartDate(windowKey: TimeWindowKey, today: string): string | null {
+  switch (windowKey) {
+    case '1D':
+      return shiftDateISO(today, -1, 'day');
+    case '1W':
+      return shiftDateISO(today, -7, 'day');
+    case '1M':
+      return shiftDateISO(today, -1, 'month');
+    case '3M':
+      return shiftDateISO(today, -3, 'month');
+    case '6M':
+      return shiftDateISO(today, -6, 'month');
+    case '1Y':
+      return shiftDateISO(today, -1, 'year');
+    case '2Y':
+      return shiftDateISO(today, -2, 'year');
+    case '5Y':
+      return shiftDateISO(today, -5, 'year');
+    case 'ALL':
+      return null;
+  }
+}
+
+function historyStartDate(windowKey: TimeWindowKey, today: string): string {
+  if (windowKey === 'ALL') return '1900-01-01';
+  if (windowKey === '1D') return shiftDateISO(today, -7, 'day');
+  return windowStartDate(windowKey, today) ?? '1900-01-01';
 }
 
 function normalizeNative(price: number | null, currency: string | undefined): number | null {
@@ -90,20 +136,22 @@ function buildPriceChartRows(
   return rows;
 }
 
-function orderedSelection(a: string, b: string): DateSelection {
-  return a <= b ? { startDate: a, endDate: b } : { startDate: b, endDate: a };
+function visibleRowsForWindow(
+  rows: PriceChartRow[],
+  windowKey: TimeWindowKey,
+  today: string,
+): PriceChartRow[] {
+  const startDate = windowStartDate(windowKey, today);
+  if (!startDate) return rows;
+
+  const windowRows = rows.filter((row) => row.date >= startDate);
+  if (windowRows.length > 0) return windowRows;
+  return windowKey === '1D' ? rows.slice(-2) : rows.slice(-1);
 }
 
-function getActiveDate(state: unknown): string | null {
-  if (!state || typeof state !== 'object') return null;
-  const activeLabel = (state as { activeLabel?: unknown }).activeLabel;
-  return typeof activeLabel === 'string' ? activeLabel : null;
-}
-
-function rangePriceReturn(rows: PriceChartRow[], startDate: string, endDate: string) {
-  const windowRows = rows.filter((row) => row.date >= startDate && row.date <= endDate);
-  const start = windowRows[0];
-  const end = windowRows[windowRows.length - 1];
+function priceReturn(rows: PriceChartRow[]) {
+  const start = rows[0];
+  const end = rows[rows.length - 1];
   if (!start || !end || start.price <= 0) return null;
   const gain = end.price - start.price;
   return {
@@ -122,12 +170,13 @@ function fmtPriceSigned(n: number | undefined | null): string {
 
 function PositionDropdown({ position, open }: { position: EnrichedPosition; open: boolean }) {
   const today = todayISO();
-  const [dragStartDate, setDragStartDate] = useState<string | null>(null);
-  const [dragEndDate, setDragEndDate] = useState<string | null>(null);
-  const [selectedRange, setSelectedRange] = useState<DateSelection | null>(null);
+  const [selectedWindow, setSelectedWindow] = useState<TimeWindowKey>('1Y');
+  const selectedWindowMeta =
+    TIME_WINDOWS.find((window) => window.key === selectedWindow) ?? TIME_WINDOWS[5];
+  const historyFrom = historyStartDate(selectedWindow, today);
   const historyQuery = useQuery({
-    queryKey: ['history', position.symbol, position.purchaseDate],
-    queryFn: () => api.history(position.symbol, position.purchaseDate, today),
+    queryKey: ['history', position.symbol, historyFrom, today],
+    queryFn: () => api.history(position.symbol, historyFrom, today),
     staleTime: 1000 * 60 * 60,
     enabled: open && !position.error,
   });
@@ -142,47 +191,22 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
       ),
     [historyQuery.data, position.currency, position.quotePriceDate, position.currentPriceNative],
   );
+  const visibleChartData = useMemo(
+    () => visibleRowsForWindow(chartData, selectedWindow, today),
+    [chartData, selectedWindow, today],
+  );
   const stroke =
     position.dayChangePct === 0 ? '#d4d4d4' : position.dayChangePct > 0 ? '#10b981' : '#f87171';
-  const activeRange =
-    dragStartDate && dragEndDate ? orderedSelection(dragStartDate, dragEndDate) : selectedRange;
 
-  const selectedRangeStats = useMemo(() => {
-    if (!selectedRange) return null;
-    const ret = rangePriceReturn(chartData, selectedRange.startDate, selectedRange.endDate);
+  const selectedWindowStats = useMemo(() => {
+    const ret = priceReturn(visibleChartData);
     return {
-      ...selectedRange,
       ret,
       valueGain: ret ? ret.gain * position.shares : null,
+      startDate: visibleChartData[0]?.date ?? null,
+      endDate: visibleChartData[visibleChartData.length - 1]?.date ?? null,
     };
-  }, [chartData, position.shares, selectedRange]);
-
-  const handleMouseDown = (state: unknown) => {
-    const date = getActiveDate(state);
-    if (!date) return;
-    setDragStartDate(date);
-    setDragEndDate(date);
-  };
-
-  const handleMouseMove = (state: unknown) => {
-    if (!dragStartDate) return;
-    const date = getActiveDate(state);
-    if (date) setDragEndDate(date);
-  };
-
-  const handleMouseUp = (state: unknown) => {
-    if (!dragStartDate) return;
-    const date = getActiveDate(state) ?? dragEndDate ?? dragStartDate;
-    const range = orderedSelection(dragStartDate, date);
-    setSelectedRange(range.startDate === range.endDate ? null : range);
-    setDragStartDate(null);
-    setDragEndDate(null);
-  };
-
-  const handleMouseLeave = () => {
-    setDragStartDate(null);
-    setDragEndDate(null);
-  };
+  }, [position.shares, visibleChartData]);
 
   return (
     <tr
@@ -200,6 +224,22 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <div>
                     <div className="text-xs font-medium text-neutral-300">Price history</div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {TIME_WINDOWS.map((window) => (
+                        <button
+                          key={window.key}
+                          type="button"
+                          className={`rounded border px-2 py-1 text-[11px] transition ${
+                            selectedWindow === window.key
+                              ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
+                              : 'border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200'
+                          }`}
+                          onClick={() => setSelectedWindow(window.key)}
+                        >
+                          {window.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div className="text-right">
                     <div className="text-xs text-neutral-500">{position.currency}</div>
@@ -208,7 +248,7 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                     </div>
                   </div>
                 </div>
-                <div className="h-44 cursor-crosshair select-none">
+                <div className="h-44 select-none">
                   {position.error ? (
                     <div className="flex h-full items-center justify-center rounded border border-amber-700/40 bg-amber-900/20 px-3 text-center text-xs text-amber-300/90">
                       Pricing unavailable for this symbol/date: {position.error}
@@ -217,19 +257,15 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                     <div className="flex h-full items-center justify-center text-xs text-neutral-500">
                       Loading chart...
                     </div>
-                  ) : chartData.length === 0 ? (
+                  ) : visibleChartData.length === 0 ? (
                     <div className="flex h-full items-center justify-center text-xs text-neutral-500">
                       No chart data available
                     </div>
                   ) : (
                     <ResponsiveContainer>
                       <LineChart
-                        data={chartData}
+                        data={visibleChartData}
                         margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
-                        onMouseDown={handleMouseDown}
-                        onMouseMove={handleMouseMove}
-                        onMouseUp={handleMouseUp}
-                        onMouseLeave={handleMouseLeave}
                       >
                         <XAxis
                           dataKey="date"
@@ -256,16 +292,6 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                           labelStyle={{ color: '#9ca3af' }}
                           formatter={(value) => [fmtPrice(Number(value)), 'Price']}
                         />
-                        {activeRange && activeRange.startDate !== activeRange.endDate ? (
-                          <ReferenceArea
-                            x1={activeRange.startDate}
-                            x2={activeRange.endDate}
-                            stroke="#a78bfa"
-                            strokeOpacity={0.7}
-                            fill="#8b5cf6"
-                            fillOpacity={0.12}
-                          />
-                        ) : null}
                         <Line
                           type="monotone"
                           dataKey="price"
@@ -278,48 +304,43 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                     </ResponsiveContainer>
                   )}
                 </div>
-                {selectedRangeStats ? (
+                {selectedWindowStats.startDate && selectedWindowStats.endDate ? (
                   <div className="mt-3 rounded border border-neutral-800 bg-neutral-900/40 p-2">
                     <div className="mb-2 flex items-start justify-between gap-3">
                       <div>
-                        <div className="text-xs font-medium text-neutral-300">Selected window</div>
+                        <div className="text-xs font-medium text-neutral-300">
+                          {selectedWindowMeta.label} window
+                        </div>
                         <div className="text-[11px] text-neutral-500">
-                          {selectedRangeStats.startDate} to {selectedRangeStats.endDate}
+                          {selectedWindowStats.startDate} to {selectedWindowStats.endDate}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:border-neutral-500 hover:text-neutral-100"
-                        onClick={() => setSelectedRange(null)}
-                      >
-                        Clear
-                      </button>
                     </div>
                     <div className="grid gap-2 text-xs sm:grid-cols-4">
                       <div>
                         <div className="text-[11px] text-neutral-500">Return</div>
-                        <div className={`num ${colorClass(selectedRangeStats.ret?.pct)}`}>
-                          {selectedRangeStats.ret ? fmtPct(selectedRangeStats.ret.pct) : '—'}
+                        <div className={`num ${colorClass(selectedWindowStats.ret?.pct)}`}>
+                          {selectedWindowStats.ret ? fmtPct(selectedWindowStats.ret.pct) : '—'}
                         </div>
                       </div>
                       <div>
                         <div className="text-[11px] text-neutral-500">Price change</div>
-                        <div className={`num ${colorClass(selectedRangeStats.ret?.gain)}`}>
-                          {selectedRangeStats.ret ? fmtPriceSigned(selectedRangeStats.ret.gain) : '—'}
+                        <div className={`num ${colorClass(selectedWindowStats.ret?.gain)}`}>
+                          {selectedWindowStats.ret ? fmtPriceSigned(selectedWindowStats.ret.gain) : '—'}
                         </div>
                       </div>
                       <div>
                         <div className="text-[11px] text-neutral-500">Position G/L</div>
-                        <div className={`num ${colorClass(selectedRangeStats.valueGain)}`}>
-                          {fmtUSDSigned(selectedRangeStats.valueGain)}
+                        <div className={`num ${colorClass(selectedWindowStats.valueGain)}`}>
+                          {fmtUSDSigned(selectedWindowStats.valueGain)}
                         </div>
                       </div>
                       <div>
                         <div className="text-[11px] text-neutral-500">Start / end</div>
                         <div className="num text-neutral-300">
-                          {selectedRangeStats.ret
-                            ? `${fmtPrice(selectedRangeStats.ret.startPrice)} -> ${fmtPrice(
-                              selectedRangeStats.ret.endPrice,
+                          {selectedWindowStats.ret
+                            ? `${fmtPrice(selectedWindowStats.ret.startPrice)} -> ${fmtPrice(
+                              selectedWindowStats.ret.endPrice,
                             )}`
                             : '—'}
                         </div>

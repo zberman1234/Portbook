@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { usePortfolio } from '../hooks/usePortfolio';
 import { api } from '../lib/api';
 import { colorClass, fmtPct, fmtPrice, fmtShares, fmtUSD, fmtUSDSigned } from '../lib/format';
@@ -149,7 +149,31 @@ function visibleRowsForWindow(
   return windowKey === '1D' ? rows.slice(-2) : rows.slice(-1);
 }
 
+type DateSelection = {
+  startDate: string;
+  endDate: string;
+};
+
+function orderedSelection(a: string, b: string): DateSelection {
+  return a <= b ? { startDate: a, endDate: b } : { startDate: b, endDate: a };
+}
+
+function getActiveDate(state: unknown): string | null {
+  if (!state || typeof state !== 'object') return null;
+  const activeLabel = (state as { activeLabel?: unknown }).activeLabel;
+  return typeof activeLabel === 'string' ? activeLabel : null;
+}
+
+function rangePriceReturn(rows: PriceChartRow[], startDate: string, endDate: string) {
+  const windowRows = rows.filter((row) => row.date >= startDate && row.date <= endDate);
+  return priceReturnFromRows(windowRows);
+}
+
 function priceReturn(rows: PriceChartRow[]) {
+  return priceReturnFromRows(rows);
+}
+
+function priceReturnFromRows(rows: PriceChartRow[]) {
   const start = rows[0];
   const end = rows[rows.length - 1];
   if (!start || !end || start.price <= 0) return null;
@@ -162,6 +186,56 @@ function priceReturn(rows: PriceChartRow[]) {
   };
 }
 
+function windowPhrase(windowKey: TimeWindowKey): string {
+  switch (windowKey) {
+    case '1D':
+      return 'today';
+    case '1W':
+      return 'past week';
+    case '1M':
+      return 'past month';
+    case '3M':
+      return 'past 3 months';
+    case '6M':
+      return 'past 6 months';
+    case '1Y':
+      return 'past year';
+    case '2Y':
+      return 'past 2 years';
+    case '5Y':
+      return 'past 5 years';
+    case 'ALL':
+      return 'all time';
+  }
+}
+
+function formatDateRange(startDate: string | null, endDate: string | null): string {
+  if (!startDate || !endDate) return '';
+  const formatter = new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+  return `${formatter.format(new Date(`${startDate}T00:00:00Z`))}-${formatter.format(
+    new Date(`${endDate}T00:00:00Z`),
+  )}`;
+}
+
+function customRangeCalloutLeft(rows: PriceChartRow[], range: DateSelection | null): string {
+  if (!range || rows.length < 2) return '50%';
+  const startIndex = rows.findIndex((row) => row.date >= range.startDate);
+  const endIndexFromEnd = rows
+    .slice()
+    .reverse()
+    .findIndex((row) => row.date <= range.endDate);
+  if (startIndex < 0 || endIndexFromEnd < 0) return '50%';
+
+  const endIndex = rows.length - 1 - endIndexFromEnd;
+  const center = ((startIndex + endIndex) / 2 / (rows.length - 1)) * 100;
+  return `${Math.min(82, Math.max(18, center))}%`;
+}
+
 function fmtPriceSigned(n: number | undefined | null): string {
   if (n === undefined || n === null || !Number.isFinite(n)) return '—';
   const sign = n > 0 ? '+' : n < 0 ? '-' : '';
@@ -170,9 +244,10 @@ function fmtPriceSigned(n: number | undefined | null): string {
 
 function PositionDropdown({ position, open }: { position: EnrichedPosition; open: boolean }) {
   const today = todayISO();
-  const [selectedWindow, setSelectedWindow] = useState<TimeWindowKey>('1Y');
-  const selectedWindowMeta =
-    TIME_WINDOWS.find((window) => window.key === selectedWindow) ?? TIME_WINDOWS[5];
+  const [selectedWindow, setSelectedWindow] = useState<TimeWindowKey>('1W');
+  const [dragStartDate, setDragStartDate] = useState<string | null>(null);
+  const [dragEndDate, setDragEndDate] = useState<string | null>(null);
+  const [customRange, setCustomRange] = useState<DateSelection | null>(null);
   const historyFrom = historyStartDate(selectedWindow, today);
   const historyQuery = useQuery({
     queryKey: ['history', position.symbol, historyFrom, today],
@@ -198,7 +273,10 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
   const stroke =
     position.dayChangePct === 0 ? '#d4d4d4' : position.dayChangePct > 0 ? '#10b981' : '#f87171';
 
-  const selectedWindowStats = useMemo(() => {
+  const activeRange =
+    dragStartDate && dragEndDate ? orderedSelection(dragStartDate, dragEndDate) : customRange;
+
+  const windowStats = useMemo(() => {
     const ret = priceReturn(visibleChartData);
     return {
       ret,
@@ -207,6 +285,48 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
       endDate: visibleChartData[visibleChartData.length - 1]?.date ?? null,
     };
   }, [position.shares, visibleChartData]);
+
+  const customStats = useMemo(() => {
+    if (customRange) {
+      const ret = rangePriceReturn(visibleChartData, customRange.startDate, customRange.endDate);
+      return {
+        ret,
+        valueGain: ret ? ret.gain * position.shares : null,
+        startDate: customRange.startDate,
+        endDate: customRange.endDate,
+      };
+    }
+    return null;
+  }, [customRange, position.shares, visibleChartData]);
+
+  const customCalloutLeft = customRangeCalloutLeft(visibleChartData, customRange);
+
+  const handleMouseDown = (state: unknown) => {
+    const date = getActiveDate(state);
+    if (!date) return;
+    setDragStartDate(date);
+    setDragEndDate(date);
+  };
+
+  const handleMouseMove = (state: unknown) => {
+    if (!dragStartDate) return;
+    const date = getActiveDate(state);
+    if (date) setDragEndDate(date);
+  };
+
+  const handleMouseUp = (state: unknown) => {
+    if (!dragStartDate) return;
+    const date = getActiveDate(state) ?? dragEndDate ?? dragStartDate;
+    const range = orderedSelection(dragStartDate, date);
+    setCustomRange(range.startDate === range.endDate ? null : range);
+    setDragStartDate(null);
+    setDragEndDate(null);
+  };
+
+  const handleMouseLeave = () => {
+    setDragStartDate(null);
+    setDragEndDate(null);
+  };
 
   return (
     <tr
@@ -229,12 +349,11 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                         <button
                           key={window.key}
                           type="button"
-                          className={`rounded border px-2 py-1 text-[11px] transition ${
-                            selectedWindow === window.key
-                              ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
-                              : 'border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200'
-                          }`}
-                          onClick={() => setSelectedWindow(window.key)}
+                          className={`rounded border px-2 py-1 text-[11px] transition ${selectedWindow === window.key
+                            ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
+                            : 'border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200'
+                            }`}
+                          onClick={() => { setSelectedWindow(window.key); setCustomRange(null); }}
                         >
                           {window.label}
                         </button>
@@ -243,12 +362,17 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                   </div>
                   <div className="text-right">
                     <div className="text-xs text-neutral-500">{position.currency}</div>
-                    <div className={`text-xs num ${colorClass(position.dayChangePct)}`}>
-                      Today {position.error ? '—' : fmtPct(position.dayChangePct)}
-                    </div>
+                    {!position.error && windowStats.ret ? (
+                      <div className={`text-xs num ${colorClass(windowStats.ret.pct)}`}>
+                        {fmtPriceSigned(windowStats.ret.gain)} ({fmtPct(windowStats.ret.pct)}){' '}
+                        {windowStats.ret.gain >= 0 ? '↑' : '↓'} {windowPhrase(selectedWindow)}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-neutral-500">—</div>
+                    )}
                   </div>
                 </div>
-                <div className="h-44 select-none">
+                <div className="relative h-44 cursor-crosshair select-none">
                   {position.error ? (
                     <div className="flex h-full items-center justify-center rounded border border-amber-700/40 bg-amber-900/20 px-3 text-center text-xs text-amber-300/90">
                       Pricing unavailable for this symbol/date: {position.error}
@@ -266,6 +390,10 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                       <LineChart
                         data={visibleChartData}
                         margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
+                        onMouseDown={handleMouseDown}
+                        onMouseMove={handleMouseMove}
+                        onMouseUp={handleMouseUp}
+                        onMouseLeave={handleMouseLeave}
                       >
                         <XAxis
                           dataKey="date"
@@ -292,6 +420,16 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                           labelStyle={{ color: '#9ca3af' }}
                           formatter={(value) => [fmtPrice(Number(value)), 'Price']}
                         />
+                        {activeRange && activeRange.startDate !== activeRange.endDate ? (
+                          <ReferenceArea
+                            x1={activeRange.startDate}
+                            x2={activeRange.endDate}
+                            stroke="#a78bfa"
+                            strokeOpacity={0.7}
+                            fill="#8b5cf6"
+                            fillOpacity={0.12}
+                          />
+                        ) : null}
                         <Line
                           type="monotone"
                           dataKey="price"
@@ -303,51 +441,23 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                       </LineChart>
                     </ResponsiveContainer>
                   )}
+                  {customStats?.ret ? (
+                    <div
+                      className={`pointer-events-none absolute top-3 z-10 -translate-x-1/2 rounded border border-neutral-700 bg-neutral-950/95 px-2.5 py-1.5 text-xs shadow-lg ${colorClass(
+                        customStats.ret.pct,
+                      )}`}
+                      style={{ left: customCalloutLeft }}
+                    >
+                      <span className="num">
+                        {fmtPriceSigned(customStats.ret.gain)} ({fmtPct(customStats.ret.pct)}){' '}
+                        {customStats.ret.gain >= 0 ? '↑' : '↓'}
+                      </span>
+                      <span className="ml-2 text-neutral-300">
+                        {formatDateRange(customStats.startDate, customStats.endDate)}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
-                {selectedWindowStats.startDate && selectedWindowStats.endDate ? (
-                  <div className="mt-3 rounded border border-neutral-800 bg-neutral-900/40 p-2">
-                    <div className="mb-2 flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-xs font-medium text-neutral-300">
-                          {selectedWindowMeta.label} window
-                        </div>
-                        <div className="text-[11px] text-neutral-500">
-                          {selectedWindowStats.startDate} to {selectedWindowStats.endDate}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="grid gap-2 text-xs sm:grid-cols-4">
-                      <div>
-                        <div className="text-[11px] text-neutral-500">Return</div>
-                        <div className={`num ${colorClass(selectedWindowStats.ret?.pct)}`}>
-                          {selectedWindowStats.ret ? fmtPct(selectedWindowStats.ret.pct) : '—'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[11px] text-neutral-500">Price change</div>
-                        <div className={`num ${colorClass(selectedWindowStats.ret?.gain)}`}>
-                          {selectedWindowStats.ret ? fmtPriceSigned(selectedWindowStats.ret.gain) : '—'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[11px] text-neutral-500">Position G/L</div>
-                        <div className={`num ${colorClass(selectedWindowStats.valueGain)}`}>
-                          {fmtUSDSigned(selectedWindowStats.valueGain)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[11px] text-neutral-500">Start / end</div>
-                        <div className="num text-neutral-300">
-                          {selectedWindowStats.ret
-                            ? `${fmtPrice(selectedWindowStats.ret.startPrice)} -> ${fmtPrice(
-                              selectedWindowStats.ret.endPrice,
-                            )}`
-                            : '—'}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
               </div>
             </div>
           </div>

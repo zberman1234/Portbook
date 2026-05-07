@@ -1,4 +1,4 @@
-import type { HistoryRow, Portfolio, Position, QuoteSnapshot, SearchHit } from '../types';
+import type { HistoryRow, Portfolio, Position, PositionSale, QuoteSnapshot, SearchHit } from '../types';
 
 async function http<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -58,6 +58,27 @@ export const api = {
   removePosition: (portfolioId: string, positionId: string) =>
     http<Portfolio[]>(
       `/api/portfolios/${encodeURIComponent(portfolioId)}/positions/${encodeURIComponent(positionId)}`,
+      { method: 'DELETE' },
+    ),
+  addPositionSale: (
+    portfolioId: string,
+    positionId: string,
+    body: {
+      saleDate: string;
+      shares: number;
+      salePriceUSD?: number;
+    },
+  ) =>
+    http<{ sale: PositionSale; portfolios: Portfolio[] }>(
+      `/api/portfolios/${encodeURIComponent(portfolioId)}/positions/${encodeURIComponent(positionId)}/sales`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  removePositionSale: (portfolioId: string, positionId: string, saleId: string) =>
+    http<Portfolio[]>(
+      `/api/portfolios/${encodeURIComponent(portfolioId)}/positions/${encodeURIComponent(positionId)}/sales/${encodeURIComponent(saleId)}`,
       { method: 'DELETE' },
     ),
 

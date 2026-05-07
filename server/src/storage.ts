@@ -9,6 +9,14 @@ const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 export const PORTFOLIOS_FILE = path.join(PROJECT_ROOT, 'portfolios.json');
 const LEGACY_FILE = path.join(PROJECT_ROOT, 'portfolio.json');
 
+export interface PositionSale {
+  id: string;
+  saleDate: string; // YYYY-MM-DD
+  shares: number;
+  salePriceUSD?: number;
+  createdAt: string; // ISO timestamp
+}
+
 export interface Position {
   id: string;
   symbol: string;
@@ -19,6 +27,7 @@ export interface Position {
   costBasisUSD?: number;
   shares?: number;
   purchasePriceUSD?: number;
+  sales?: PositionSale[];
   createdAt: string; // ISO timestamp
 }
 
@@ -149,6 +158,84 @@ export async function removePositionFromPortfolio(
   });
   if (!found) {
     const err = new Error(`portfolio not found: ${portfolioId}`);
+    (err as NodeJS.ErrnoException).code = 'ENOENT';
+    throw err;
+  }
+  await savePortfolios(updated);
+  return updated;
+}
+
+export async function addSaleToPosition(
+  portfolioId: string,
+  positionId: string,
+  sale: PositionSale,
+  maxPurchasedShares: number,
+): Promise<Portfolio[]> {
+  const current = await loadPortfolios();
+  let foundPortfolio = false;
+  let foundPosition = false;
+  const updated = current.map((p) => {
+    if (p.id !== portfolioId) return p;
+    foundPortfolio = true;
+    return {
+      ...p,
+      positions: p.positions.map((pos) => {
+        if (pos.id !== positionId) return pos;
+        foundPosition = true;
+        const existingSales = pos.sales ?? [];
+        const soldShares = existingSales.reduce((sum, s) => sum + s.shares, 0);
+        if (soldShares + sale.shares > maxPurchasedShares + 1e-8) {
+          const err = new Error('sale exceeds open shares');
+          (err as NodeJS.ErrnoException).code = 'ERANGE';
+          throw err;
+        }
+        return { ...pos, sales: [...existingSales, sale] };
+      }),
+    };
+  });
+  if (!foundPortfolio || !foundPosition) {
+    const err = new Error(
+      !foundPortfolio ? `portfolio not found: ${portfolioId}` : `position not found: ${positionId}`,
+    );
+    (err as NodeJS.ErrnoException).code = 'ENOENT';
+    throw err;
+  }
+  await savePortfolios(updated);
+  return updated;
+}
+
+export async function removeSaleFromPosition(
+  portfolioId: string,
+  positionId: string,
+  saleId: string,
+): Promise<Portfolio[]> {
+  const current = await loadPortfolios();
+  let foundPortfolio = false;
+  let foundPosition = false;
+  let foundSale = false;
+  const updated = current.map((p) => {
+    if (p.id !== portfolioId) return p;
+    foundPortfolio = true;
+    return {
+      ...p,
+      positions: p.positions.map((pos) => {
+        if (pos.id !== positionId) return pos;
+        foundPosition = true;
+        const sales = pos.sales ?? [];
+        const nextSales = sales.filter((sale) => sale.id !== saleId);
+        foundSale = nextSales.length !== sales.length;
+        return { ...pos, sales: nextSales.length > 0 ? nextSales : undefined };
+      }),
+    };
+  });
+  if (!foundPortfolio || !foundPosition || !foundSale) {
+    const err = new Error(
+      !foundPortfolio
+        ? `portfolio not found: ${portfolioId}`
+        : !foundPosition
+          ? `position not found: ${positionId}`
+          : `sale not found: ${saleId}`,
+    );
     (err as NodeJS.ErrnoException).code = 'ENOENT';
     throw err;
   }

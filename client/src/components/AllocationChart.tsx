@@ -11,20 +11,25 @@ const PALETTE = [
 
 interface Props {
   enriched: EnrichedPosition[];
+  cashUSD?: number;
 }
 
-export function AllocationChart({ enriched }: Props) {
+export function AllocationChart({ enriched, cashUSD = 0 }: Props) {
   const data = useMemo(() => {
     const valid = enriched.filter((p) => !p.error && p.marketValueUSD > 0);
-    const total = valid.reduce((s, p) => s + p.marketValueUSD, 0);
-    return valid
+    const total = valid.reduce((s, p) => s + p.marketValueUSD, 0) + cashUSD;
+    const holdings = valid
       .map((p) => ({
         name: p.symbol,
         value: p.marketValueUSD,
         pct: total > 0 ? p.marketValueUSD / total : 0,
-      }))
-      .sort((a, b) => b.value - a.value);
-  }, [enriched]);
+      }));
+    const rows =
+      cashUSD > 0
+        ? [...holdings, { name: 'Cash', value: cashUSD, pct: total > 0 ? cashUSD / total : 0 }]
+        : holdings;
+    return rows.sort((a, b) => b.value - a.value);
+  }, [cashUSD, enriched]);
 
   return (
     <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 flex h-full min-h-0 flex-col overflow-hidden">

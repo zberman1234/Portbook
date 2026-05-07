@@ -5,34 +5,42 @@ import type { EnrichedPosition } from '../types';
 interface Props {
   enriched: EnrichedPosition[];
   loading: boolean;
+  cashUSD?: number;
+  totalCostBasisUSD?: number;
 }
 
-export function PortfolioSummary({ enriched, loading }: Props) {
+export function PortfolioSummary({ enriched, loading, cashUSD = 0, totalCostBasisUSD }: Props) {
   const t = totals(enriched);
+  const cost = totalCostBasisUSD ?? t.cost;
+  const value = t.value + cashUSD;
+  const gain = value - cost;
+  const gainPct = cost > 0 ? gain / cost : 0;
+  const priorValue = value - t.dayChangeUSD;
+  const dayChangePct = priorValue > 0 ? t.dayChangeUSD / priorValue : 0;
 
   const cards = [
     {
-      label: 'Total market value',
-      value: fmtUSD(t.value),
-      hint: `${t.validCount} position${t.validCount === 1 ? '' : 's'} priced`,
+      label: 'Portfolio value',
+      value: fmtUSD(value),
+      hint: `${t.validCount} position${t.validCount === 1 ? '' : 's'} + ${fmtUSD(cashUSD)} cash`,
       color: 'text-neutral-100',
     },
     {
       label: 'Total cost basis',
-      value: fmtUSD(t.cost),
-      hint: 'sum of position amounts',
+      value: fmtUSD(cost),
+      hint: 'original invested cost',
       color: 'text-neutral-300',
     },
     {
       label: 'Total gain / loss',
-      value: fmtUSDSigned(t.gain),
-      hint: fmtPct(t.gainPct),
-      color: colorClass(t.gain),
+      value: fmtUSDSigned(gain),
+      hint: fmtPct(gainPct),
+      color: colorClass(gain),
     },
     {
       label: "Today's change",
       value: fmtUSDSigned(t.dayChangeUSD),
-      hint: fmtPct(t.dayChangePct),
+      hint: fmtPct(dayChangePct),
       color: colorClass(t.dayChangeUSD),
     },
   ];

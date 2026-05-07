@@ -16,6 +16,7 @@ import {
 import { api } from '../lib/api';
 import { costBasisUSD, explicitPurchasePriceUSD, purchaseLot } from '../lib/calc';
 import { fmtPct, fmtUSD, fmtUSDSigned } from '../lib/format';
+import { saleProceedsUSD } from '../lib/positions';
 import type { HistoryRow, Position } from '../types';
 
 interface Props {
@@ -194,7 +195,7 @@ export function PerformanceChart({ positions }: Props) {
     });
     const allDates = Array.from(datesSet).sort();
 
-    type Snap = { shares: number; costBasisUSD: number; usdByDate: Map<string, number> };
+    type Snap = { costBasisUSD: number; usdByDate: Map<string, number> };
 
     const snaps: (Snap | null)[] = positions.map((p, i) => {
       const buyClose = buyCloseQueries[i]?.data;
@@ -228,6 +229,7 @@ export function PerformanceChart({ positions }: Props) {
       }
 
       const usdByDate = new Map<string, number>();
+      const sales = (p.sales ?? []).slice().sort((a, b) => a.saleDate.localeCompare(b.saleDate));
       let lastFx = buyFxRate ?? null;
       history.forEach((r) => {
         const closeNative = normalizeNative(r.adjclose ?? r.close, p.currency);
@@ -238,10 +240,16 @@ export function PerformanceChart({ positions }: Props) {
         }
         if (lastFx === null) return;
         const priceUSD = closeNative * lastFx;
-        usdByDate.set(r.date, priceUSD * lot.shares);
+        const soldShares = sales
+          .filter((sale) => sale.saleDate <= r.date)
+          .reduce((sum, sale) => sum + sale.shares, 0);
+        const saleCash = sales
+          .filter((sale) => sale.saleDate <= r.date)
+          .reduce((sum, sale) => sum + saleProceedsUSD(sale), 0);
+        usdByDate.set(r.date, priceUSD * Math.max(0, lot.shares - soldShares) + saleCash);
       });
 
-      return { shares: lot.shares, costBasisUSD: lot.costBasisUSD, usdByDate };
+      return { costBasisUSD: lot.costBasisUSD, usdByDate };
     });
 
     const costBasisByPosition = positions.map((p, i) => snaps[i]?.costBasisUSD ?? costBasisUSD(p));

@@ -7,15 +7,21 @@ import {
   getChart,
   closestTradingClose,
   getFxRate,
+  normalizeCurrency,
 } from './yahoo.js';
 import {
   loadPortfolios,
+  savePortfolios,
   addPortfolio,
   removePortfolio,
   renamePortfolio,
   addPositionToPortfolio,
   removePositionFromPortfolio,
+  addSaleToPosition,
+  removeSaleFromPosition,
+  type Portfolio,
   type Position,
+  type PositionSale,
   PORTFOLIOS_FILE,
 } from './storage.js';
 
@@ -39,6 +45,90 @@ function parseCostBasisUSD(value: unknown): number | null {
   return parsePositiveNumber(value);
 }
 
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function isISODate(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function explicitPositionShares(position: Position): number | null {
+  const shares = position.shares;
+  return typeof shares === 'number' && Number.isFinite(shares) && shares > 0 ? shares : null;
+}
+
+function explicitPurchasePriceUSD(position: Position): number | null {
+  const price = position.purchasePriceUSD;
+  return typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function positionCostBasisUSD(position: Position): number {
+  const amount = position.costBasisUSD;
+  return typeof amount === 'number' && Number.isFinite(amount) && amount > 0
+    ? amount
+    : DEFAULT_COST_BASIS_USD;
+}
+
+async function resolvePurchasedShares(position: Position): Promise<number | null> {
+  const explicitShares = explicitPositionShares(position);
+  if (explicitShares !== null) return explicitShares;
+
+  let purchasePriceUSD = explicitPurchasePriceUSD(position);
+  if (purchasePriceUSD === null) {
+    const close = await closestTradingClose(position.symbol, position.purchaseDate);
+    if (!close) return null;
+    const normalized = normalizeCurrency(close.close, position.currency, position.symbol);
+    const fx = await getFxRate(normalized.currency, 'USD', position.purchaseDate);
+    if (fx === null) return null;
+    purchasePriceUSD = normalized.price * fx;
+  }
+
+  return purchasePriceUSD > 0 ? positionCostBasisUSD(position) / purchasePriceUSD : null;
+}
+
+async function resolveSalePriceUSD(position: Position, saleDate: string): Promise<number | null> {
+  const close = await closestTradingClose(position.symbol, saleDate);
+  if (!close) return null;
+  const normalized = normalizeCurrency(close.close, position.currency, position.symbol);
+  const fx = await getFxRate(normalized.currency, 'USD', close.date);
+  return fx === null ? null : normalized.price * fx;
+}
+
+function soldShares(position: Position): number {
+  return (position.sales ?? []).reduce((sum, sale) => sum + sale.shares, 0);
+}
+
+async function backfillMissingSalePrices(portfolios: Portfolio[]): Promise<Portfolio[]> {
+  let changed = false;
+  const updated = await Promise.all(
+    portfolios.map(async (portfolio) => ({
+      ...portfolio,
+      positions: await Promise.all(
+        portfolio.positions.map(async (position) => {
+          if (!position.sales?.some((sale) => sale.salePriceUSD === undefined)) {
+            return position;
+          }
+          const sales = await Promise.all(
+            position.sales.map(async (sale) => {
+              if (sale.salePriceUSD !== undefined) return sale;
+              const salePriceUSD = await resolveSalePriceUSD(position, sale.saleDate);
+              if (salePriceUSD === null) return sale;
+              changed = true;
+              return { ...sale, salePriceUSD };
+            }),
+          );
+          return { ...position, sales };
+        }),
+      ),
+    })),
+  );
+  if (changed) {
+    await savePortfolios(updated);
+  }
+  return updated;
+}
+
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
@@ -50,7 +140,7 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/portfolios', async (_req, res, next) => {
   try {
-    const portfolios = await loadPortfolios();
+    const portfolios = await backfillMissingSalePrices(await loadPortfolios());
     res.json(portfolios);
   } catch (err) {
     next(err);
@@ -183,6 +273,116 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
       throw err;
     }
   } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/portfolios/:portfolioId/positions/:positionId/sales', async (req, res, next) => {
+  try {
+    const {
+      saleDate,
+      shares: rawShares,
+      salePriceUSD: rawSalePriceUSD,
+    } = req.body as Partial<PositionSale>;
+
+    if (!isISODate(saleDate)) {
+      res.status(400).json({ error: 'saleDate must be YYYY-MM-DD' });
+      return;
+    }
+    if (saleDate > todayISO()) {
+      res.status(400).json({ error: 'saleDate cannot be in the future' });
+      return;
+    }
+
+    const shares = parsePositiveNumber(rawShares);
+    if (shares === null) {
+      res.status(400).json({ error: 'shares must be a positive number' });
+      return;
+    }
+
+    let salePriceUSD = hasProvidedValue(rawSalePriceUSD)
+      ? parsePositiveNumber(rawSalePriceUSD)
+      : undefined;
+    if (salePriceUSD === null) {
+      res.status(400).json({ error: 'salePriceUSD must be a positive number' });
+      return;
+    }
+
+    const portfolios = await loadPortfolios();
+    const portfolio = portfolios.find((p) => p.id === req.params.portfolioId);
+    const position = portfolio?.positions.find((p) => p.id === req.params.positionId);
+    if (!portfolio || !position) {
+      res.status(404).json({ error: !portfolio ? 'portfolio not found' : 'position not found' });
+      return;
+    }
+    if (saleDate < position.purchaseDate) {
+      res.status(400).json({ error: 'saleDate cannot be before purchaseDate' });
+      return;
+    }
+
+    const purchasedShares = await resolvePurchasedShares(position);
+    if (purchasedShares === null || !Number.isFinite(purchasedShares) || purchasedShares <= 0) {
+      res.status(400).json({ error: 'could not resolve purchased shares for position' });
+      return;
+    }
+    const openShares = purchasedShares - soldShares(position);
+    if (shares > openShares + 1e-8) {
+      res.status(400).json({ error: 'sale exceeds open shares' });
+      return;
+    }
+    if (salePriceUSD === undefined) {
+      salePriceUSD = await resolveSalePriceUSD(position, saleDate);
+      if (salePriceUSD === null) {
+        res.status(400).json({ error: 'could not resolve sale price on or near saleDate' });
+        return;
+      }
+    }
+
+    const sale: PositionSale = {
+      id: randomUUID(),
+      saleDate,
+      shares,
+      salePriceUSD,
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      const updated = await addSaleToPosition(
+        req.params.portfolioId,
+        req.params.positionId,
+        sale,
+        purchasedShares,
+      );
+      res.status(201).json({ sale, portfolios: updated });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: 'portfolio or position not found' });
+        return;
+      }
+      if ((err as NodeJS.ErrnoException).code === 'ERANGE') {
+        res.status(400).json({ error: 'sale exceeds open shares' });
+        return;
+      }
+      throw err;
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/api/portfolios/:portfolioId/positions/:positionId/sales/:saleId', async (req, res, next) => {
+  try {
+    const updated = await removeSaleFromPosition(
+      req.params.portfolioId,
+      req.params.positionId,
+      req.params.saleId,
+    );
+    res.json(updated);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      res.status(404).json({ error: 'portfolio, position, or sale not found' });
+      return;
+    }
     next(err);
   }
 });

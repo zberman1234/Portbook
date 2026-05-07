@@ -7,6 +7,7 @@ import { PerformanceChart } from './components/PerformanceChart';
 import { PortfolioTabs } from './components/PortfolioTabs';
 import { usePortfolio } from './hooks/usePortfolio';
 import { useEnrichedPositions } from './hooks/usePrices';
+import { applySalesToEnrichedPositions, cashFromSales, originalCostBasisUSD } from './lib/positions';
 
 export default function App() {
   const qc = useQueryClient();
@@ -23,8 +24,15 @@ export default function App() {
     renamingPortfolio,
     deletePortfolio,
     deletingPortfolio,
+    addSale,
+    selling,
+    removeSale,
+    undoingSale,
   } = usePortfolio();
-  const { enriched, isLoading: pricesLoading, isFetching: pricesFetching } = useEnrichedPositions(positions);
+  const { enriched: savedEnriched, isLoading: pricesLoading, isFetching: pricesFetching } = useEnrichedPositions(positions);
+  const enriched = applySalesToEnrichedPositions(savedEnriched);
+  const cashUSD = cashFromSales(savedEnriched);
+  const totalCostBasisUSD = originalCostBasisUSD(savedEnriched);
 
   const handleRefresh = () => {
     qc.invalidateQueries({ queryKey: ['portfolios'] });
@@ -80,18 +88,30 @@ export default function App() {
           </div>
         ) : null}
 
-        <PortfolioSummary enriched={enriched} loading={positionsLoading || pricesLoading} />
+        <PortfolioSummary
+          enriched={enriched}
+          loading={positionsLoading || pricesLoading}
+          cashUSD={cashUSD}
+          totalCostBasisUSD={totalCostBasisUSD}
+        />
 
         {positions.length > 0 ? (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
             <div className="lg:h-[30.25rem] lg:min-h-0">
-              <AllocationChart enriched={enriched} />
+              <AllocationChart enriched={enriched} cashUSD={cashUSD} />
             </div>
             <PerformanceChart positions={positions} />
           </div>
         ) : null}
 
-        <PositionsTable enriched={enriched} loading={positionsLoading || pricesLoading} />
+        <PositionsTable
+          enriched={enriched}
+          loading={positionsLoading || pricesLoading}
+          onSell={(positionId, sale) => addSale({ positionId, sale })}
+          selling={selling}
+          onUndoSale={(positionId, saleId) => removeSale({ positionId, saleId })}
+          undoingSale={undoingSale}
+        />
       </main>
 
       <footer className="max-w-7xl mx-auto px-6 pb-10 pt-4 text-xs text-neutral-600">

@@ -1,3 +1,11 @@
+export interface PositionSale {
+  id: string;
+  saleDate: string;
+  shares: number;
+  salePriceUSD?: number;
+  createdAt: string;
+}
+
 export interface Position {
   id: string;
   symbol: string;
@@ -8,6 +16,7 @@ export interface Position {
   costBasisUSD?: number;
   shares?: number;
   purchasePriceUSD?: number;
+  sales?: PositionSale[];
   createdAt: string;
 }
 

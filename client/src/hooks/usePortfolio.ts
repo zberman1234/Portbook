@@ -124,6 +124,36 @@ export function usePortfolio() {
     },
   });
 
+  const addSaleMutation = useMutation({
+    mutationFn: ({
+      positionId,
+      sale,
+    }: {
+      positionId: string;
+      sale: { saleDate: string; shares: number; salePriceUSD?: number };
+    }) => {
+      if (!activePortfolioIdState) {
+        return Promise.reject(new Error('no active portfolio'));
+      }
+      return api.addPositionSale(activePortfolioIdState, positionId, sale);
+    },
+    onSuccess: (data) => {
+      qc.setQueryData(['portfolios'], data.portfolios);
+    },
+  });
+
+  const removeSaleMutation = useMutation({
+    mutationFn: ({ positionId, saleId }: { positionId: string; saleId: string }) => {
+      if (!activePortfolioIdState) {
+        return Promise.reject(new Error('no active portfolio'));
+      }
+      return api.removePositionSale(activePortfolioIdState, positionId, saleId);
+    },
+    onSuccess: (data) => {
+      qc.setQueryData(['portfolios'], data);
+    },
+  });
+
   const createPortfolioMutation = useMutation({
     mutationFn: (name: string) => api.createPortfolio(name),
     onSuccess: (data) => {
@@ -163,6 +193,10 @@ export function usePortfolio() {
     adding: addMutation.isPending,
     remove: removeMutation.mutateAsync,
     removing: removeMutation.isPending,
+    addSale: addSaleMutation.mutateAsync,
+    selling: addSaleMutation.isPending,
+    removeSale: removeSaleMutation.mutateAsync,
+    undoingSale: removeSaleMutation.isPending,
     createPortfolio: createPortfolioMutation.mutateAsync,
     creatingPortfolio: createPortfolioMutation.isPending,
     renamePortfolio: renamePortfolioMutation.mutateAsync,

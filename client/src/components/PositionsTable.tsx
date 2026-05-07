@@ -1,10 +1,11 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useMemo, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { usePortfolio } from '../hooks/usePortfolio';
 import { api } from '../lib/api';
 import { colorClass, fmtPct, fmtPrice, fmtShares, fmtUSD, fmtUSDSigned } from '../lib/format';
-import type { EnrichedPosition, HistoryRow } from '../types';
+import { saleProceedsUSD, SHARE_EPSILON } from '../lib/positions';
+import type { EnrichedPosition, HistoryRow, PositionSale } from '../types';
 
 type SortKey =
   | 'symbol'
@@ -22,6 +23,13 @@ type SortKey =
 interface Props {
   enriched: EnrichedPosition[];
   loading: boolean;
+  onSell: (
+    positionId: string,
+    sale: { saleDate: string; shares: number; salePriceUSD?: number },
+  ) => Promise<unknown>;
+  selling: boolean;
+  onUndoSale: (positionId: string, saleId: string) => Promise<unknown>;
+  undoingSale: boolean;
 }
 
 const columns: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
@@ -240,6 +248,252 @@ function fmtPriceSigned(n: number | undefined | null): string {
   if (n === undefined || n === null || !Number.isFinite(n)) return '—';
   const sign = n > 0 ? '+' : n < 0 ? '-' : '';
   return `${sign}${fmtPrice(Math.abs(n))}`;
+}
+
+function SellFormRow({
+  position,
+  selling,
+  onCancel,
+  onSubmit,
+}: {
+  position: EnrichedPosition;
+  selling: boolean;
+  onCancel: () => void;
+  onSubmit: (sale: { saleDate: string; shares: number; salePriceUSD?: number }) => Promise<unknown>;
+}) {
+  const today = todayISO();
+  const [saleDate, setSaleDate] = useState(today);
+  const [shares, setShares] = useState('');
+  const [salePrice, setSalePrice] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const shareValue = Number(shares);
+  const estimatedRemaining =
+    Number.isFinite(shareValue) && shareValue > 0
+      ? Math.max(0, position.shares - shareValue)
+      : position.shares;
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+
+    if (!saleDate) {
+      setError('Please pick a sale date.');
+      return;
+    }
+    if (saleDate < position.purchaseDate) {
+      setError('Sale date cannot be before the purchase date.');
+      return;
+    }
+    if (saleDate > today) {
+      setError('Sale date cannot be in the future.');
+      return;
+    }
+    if (!Number.isFinite(shareValue) || shareValue <= 0) {
+      setError('Please enter a share quantity greater than 0.');
+      return;
+    }
+    if (shareValue > position.shares + SHARE_EPSILON) {
+      setError(`You only have ${fmtShares(position.shares)} open shares.`);
+      return;
+    }
+
+    const salePriceUSD = salePrice.trim() === '' ? undefined : Number(salePrice);
+    if (
+      salePriceUSD !== undefined &&
+      (!Number.isFinite(salePriceUSD) || salePriceUSD <= 0)
+    ) {
+      setError('Please enter a sale price greater than $0, or leave it blank.');
+      return;
+    }
+
+    try {
+      await onSubmit({
+        saleDate,
+        shares: shareValue,
+        ...(salePriceUSD !== undefined ? { salePriceUSD } : {}),
+      });
+      onCancel();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  return (
+    <tr className="border-t border-neutral-800 bg-neutral-900/30">
+      <td colSpan={columns.length + 1} className="px-3 py-3">
+        <form onSubmit={handleSubmit} className="rounded-lg border border-neutral-800 bg-neutral-950/80 p-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-medium text-neutral-300">Record sale for {position.symbol}</div>
+              <div className="text-xs text-neutral-500">
+                Open shares: <span className="num">{fmtShares(position.shares)}</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:border-neutral-500 hover:text-neutral-100"
+              onClick={onCancel}
+            >
+              Cancel
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+            <div>
+              <label className="mb-1 block text-xs text-neutral-500">Sale date</label>
+              <input
+                type="date"
+                value={saleDate}
+                min={position.purchaseDate}
+                max={today}
+                onChange={(event) => setSaleDate(event.target.value)}
+                className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-neutral-500">Shares to sell</label>
+              <input
+                type="number"
+                value={shares}
+                min="0.000001"
+                max={String(position.shares)}
+                step="0.000001"
+                inputMode="decimal"
+                placeholder={fmtShares(position.shares)}
+                onChange={(event) => setShares(event.target.value)}
+                className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-neutral-500">Sale price/share USD (optional)</label>
+              <input
+                type="number"
+                value={salePrice}
+                min="0.01"
+                step="0.01"
+                inputMode="decimal"
+                placeholder="Yahoo close"
+                onChange={(event) => setSalePrice(event.target.value)}
+                className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={selling}
+              className="h-[38px] rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-neutral-950 transition hover:bg-emerald-400 disabled:opacity-60"
+            >
+              {selling ? 'Saving…' : 'Record sale'}
+            </button>
+          </div>
+          <div className="mt-2 text-xs text-neutral-500">
+            Remaining after sale: <span className="num text-neutral-300">{fmtShares(estimatedRemaining)}</span>
+          </div>
+          {error ? <div className="mt-2 text-xs text-red-400">{error}</div> : null}
+        </form>
+      </td>
+    </tr>
+  );
+}
+
+type SoldRow = {
+  position: EnrichedPosition;
+  sale: PositionSale;
+};
+
+function SoldPositionsDropdown({
+  rows,
+  open,
+  undoingSale,
+  onToggle,
+  onUndoSale,
+}: {
+  rows: SoldRow[];
+  open: boolean;
+  undoingSale: boolean;
+  onToggle: () => void;
+  onUndoSale: (positionId: string, saleId: string) => Promise<unknown>;
+}) {
+  if (rows.length === 0) return null;
+
+  const totalShares = rows.reduce((sum, row) => sum + row.sale.shares, 0);
+
+  return (
+    <div className="border-t border-neutral-800">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between px-5 py-3 text-left transition hover:bg-neutral-900/50"
+      >
+        <div>
+          <div className="text-sm font-medium text-neutral-400">Sold</div>
+          <div className="text-xs text-neutral-600">
+            {rows.length} sale{rows.length === 1 ? '' : 's'} ·{' '}
+            <span className="num">{fmtShares(totalShares)}</span> share
+            {Math.abs(totalShares - 1) <= SHARE_EPSILON ? '' : 's'}
+          </div>
+        </div>
+        <span className={`text-sm text-neutral-500 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}>▶</span>
+      </button>
+      <div
+        className="grid transition-[grid-template-rows,opacity] duration-200 ease-out"
+        style={{ gridTemplateRows: open ? '1fr' : '0fr', opacity: open ? 1 : 0 }}
+      >
+        <div className="overflow-hidden">
+          <div className="overflow-auto border-t border-neutral-800" style={{ maxHeight: 'min(40vh, 360px)' }}>
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500 sticky top-0 z-10">
+                <tr>
+                  <th className="px-3 py-2 text-left">Symbol</th>
+                  <th className="px-3 py-2 text-left">Name</th>
+                  <th className="px-3 py-2 text-left">Bought</th>
+                  <th className="px-3 py-2 text-left">Sold</th>
+                  <th className="px-3 py-2 text-right">Shares Sold</th>
+                  <th className="px-3 py-2 text-right">Cost/Share</th>
+                  <th className="px-3 py-2 text-right">Sale Price/Share</th>
+                  <th className="px-3 py-2 text-right">Proceeds</th>
+                  <th className="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(({ position, sale }) => {
+                  const proceeds = saleProceedsUSD(sale);
+                  return (
+                    <tr key={sale.id} className="border-t border-neutral-800">
+                      <td className="px-3 py-2 font-mono text-neutral-300">{position.symbol}</td>
+                      <td className="max-w-[22ch] truncate px-3 py-2 text-neutral-300" title={position.name}>
+                        {position.name}
+                      </td>
+                      <td className="px-3 py-2 num text-neutral-400">{position.purchaseDate}</td>
+                      <td className="px-3 py-2 num text-neutral-400">{sale.saleDate}</td>
+                      <td className="px-3 py-2 text-right num text-neutral-300">{fmtShares(sale.shares)}</td>
+                      <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(position.purchasePriceUSD)}</td>
+                      <td className="px-3 py-2 text-right num text-neutral-300">
+                        {sale.salePriceUSD === undefined ? '—' : fmtPrice(sale.salePriceUSD)}
+                      </td>
+                      <td className="px-3 py-2 text-right num text-neutral-100">
+                        {proceeds > 0 ? fmtUSD(proceeds) : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        disabled={undoingSale}
+                        onClick={() => onUndoSale(position.id, sale.id)}
+                        className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
+                        title="Undo sale"
+                      >
+                        {undoingSale ? 'Undoing…' : 'Undo'}
+                      </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function PositionDropdown({ position, open }: { position: EnrichedPosition; open: boolean }) {
@@ -467,14 +721,23 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
   );
 }
 
-export function PositionsTable({ enriched, loading }: Props) {
+export function PositionsTable({
+  enriched,
+  loading,
+  onSell,
+  selling,
+  onUndoSale,
+  undoingSale,
+}: Props) {
   const { remove, removing } = usePortfolio();
   const [sortKey, setSortKey] = useState<SortKey>('marketValueUSD');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [expandedPositionId, setExpandedPositionId] = useState<string | null>(null);
+  const [sellingPositionId, setSellingPositionId] = useState<string | null>(null);
+  const [soldOpen, setSoldOpen] = useState(false);
 
   const sorted = useMemo(() => {
-    const rows = enriched.slice();
+    const rows = enriched.filter((position) => position.shares > SHARE_EPSILON);
     rows.sort((a, b) => {
       const av = a[sortKey];
       const bv = b[sortKey];
@@ -488,6 +751,19 @@ export function PositionsTable({ enriched, loading }: Props) {
     return rows;
   }, [enriched, sortKey, sortDir]);
 
+  const soldRows = useMemo(
+    () =>
+      enriched
+        .flatMap((position) =>
+          (position.sales ?? []).map((sale) => ({
+            position,
+            sale,
+          })),
+        )
+        .sort((a, b) => b.sale.saleDate.localeCompare(a.sale.saleDate)),
+    [enriched],
+  );
+
   function onSort(key: SortKey) {
     if (key === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     else {
@@ -498,6 +774,10 @@ export function PositionsTable({ enriched, loading }: Props) {
 
   function toggleExpanded(positionId: string) {
     setExpandedPositionId((current) => (current === positionId ? null : positionId));
+  }
+
+  function openSellForm(positionId: string) {
+    setSellingPositionId(positionId);
   }
 
   if (!loading && enriched.length === 0) {
@@ -515,7 +795,9 @@ export function PositionsTable({ enriched, loading }: Props) {
     <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 overflow-hidden">
       <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-800">
         <h2 className="text-sm font-medium text-neutral-300">Positions</h2>
-        <span className="text-xs text-neutral-500">{enriched.length} holding{enriched.length === 1 ? '' : 's'}</span>
+        <span className="text-xs text-neutral-500">
+          {sorted.length} active · {soldRows.length} sold
+        </span>
       </div>
       <div className="overflow-auto">
         <table className="w-full text-sm">
@@ -575,23 +857,51 @@ export function PositionsTable({ enriched, loading }: Props) {
                       {p.error ? '—' : fmtPct(p.totalGainPct)}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          remove(p.id);
-                        }}
-                        disabled={removing}
-                        title="Remove position"
-                        className="text-neutral-500 hover:text-red-400 text-xs px-2 py-1 rounded border border-neutral-800 hover:border-red-500/40 transition"
-                      >
-                        Remove
-                      </button>
+                      <div className="inline-flex divide-x divide-neutral-800 rounded border border-neutral-800 overflow-hidden">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openSellForm(p.id);
+                          }}
+                          disabled={selling || removing || p.shares <= SHARE_EPSILON}
+                          title="Record sale"
+                          className="px-2 py-1 text-xs text-neutral-500 transition hover:bg-neutral-800/60 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Sell
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            remove(p.id);
+                          }}
+                          disabled={removing}
+                          title="Remove position"
+                          className="px-2 py-1 text-xs text-neutral-500 transition hover:bg-neutral-800/60 hover:text-red-400 disabled:opacity-40"
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </td>
                   </tr>
+                  {sellingPositionId === p.id ? (
+                    <SellFormRow
+                      position={p}
+                      selling={selling}
+                      onCancel={() => setSellingPositionId(null)}
+                      onSubmit={(sale) => onSell(p.id, sale)}
+                    />
+                  ) : null}
                   <PositionDropdown position={p} open={isExpanded} />
                 </Fragment>
               );
             })}
+            {!loading && sorted.length === 0 ? (
+              <tr>
+                <td colSpan={columns.length + 1} className="px-3 py-6 text-center text-neutral-500">
+                  No active positions
+                </td>
+              </tr>
+            ) : null}
             {loading && enriched.length === 0 ? (
               <tr>
                 <td colSpan={columns.length + 1} className="px-3 py-6 text-center text-neutral-500">
@@ -606,6 +916,13 @@ export function PositionsTable({ enriched, loading }: Props) {
             Some positions could not be priced. Yahoo may not have history for the requested symbol/date.
           </div>
         ) : null}
+        <SoldPositionsDropdown
+          rows={soldRows}
+          open={soldOpen}
+          undoingSale={undoingSale}
+          onToggle={() => setSoldOpen((open) => !open)}
+          onUndoSale={onUndoSale}
+        />
       </div>
     </div>
   );

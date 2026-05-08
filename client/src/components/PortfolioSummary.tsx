@@ -14,9 +14,8 @@ export function PortfolioSummary({ enriched, loading, cashUSD = 0, totalCostBasi
   const cost = totalCostBasisUSD ?? t.cost;
   const value = t.value + cashUSD;
   const gain = value - cost;
-  const gainPct = cost > 0 ? gain / cost : 0;
-  const priorValue = value - t.dayChangeUSD;
-  const dayChangePct = priorValue > 0 ? t.dayChangeUSD / priorValue : 0;
+  const gainPct = Math.abs(cost) > 0 ? gain / Math.abs(cost) : 0;
+  const dayChangePct = t.dayChangePct;
 
   const cards = [
     {
@@ -26,9 +25,9 @@ export function PortfolioSummary({ enriched, loading, cashUSD = 0, totalCostBasi
       color: 'text-neutral-100',
     },
     {
-      label: 'Total cost basis',
+      label: 'Net cost basis',
       value: fmtUSD(cost),
-      hint: 'original invested cost',
+      hint: 'signed opening cost',
       color: 'text-neutral-300',
     },
     {

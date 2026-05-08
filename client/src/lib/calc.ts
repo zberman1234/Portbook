@@ -4,7 +4,7 @@ export const DEFAULT_COST_BASIS_USD = 100;
 
 export function explicitShares(position: Pick<Position, 'shares'>): number | null {
   const shares = position.shares;
-  return typeof shares === 'number' && Number.isFinite(shares) && shares > 0 ? shares : null;
+  return typeof shares === 'number' && Number.isFinite(shares) && shares !== 0 ? shares : null;
 }
 
 export function explicitPurchasePriceUSD(
@@ -23,7 +23,7 @@ export function costBasisUSD(
     return purchasePrice !== null ? shareQuantity * purchasePrice : 0;
   }
   const amount = position.costBasisUSD;
-  return typeof amount === 'number' && Number.isFinite(amount) && amount > 0
+  return typeof amount === 'number' && Number.isFinite(amount) && amount !== 0
     ? amount
     : DEFAULT_COST_BASIS_USD;
 }
@@ -160,13 +160,17 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
 
   const marketValueUSD = lot.shares * currentPriceUSD;
   const totalGainUSD = marketValueUSD - lot.costBasisUSD;
-  const totalGainPct = totalGainUSD / lot.costBasisUSD;
+  const totalGainPct = totalGainUSD / Math.abs(lot.costBasisUSD);
   const quotePriceDate = typeof q?.regularMarketTime === 'string' ? q.regularMarketTime.slice(0, 10) : null;
   const quoteDayChangePct =
     typeof q?.regularMarketChangePercent === 'number' ? q.regularMarketChangePercent / 100 : 0;
   const purchasePriceDate = bundle.purchaseClose?.date ?? position.purchaseDate;
   const dayChangePct =
-    quotePriceDate && purchasePriceDate >= quotePriceDate ? totalGainPct : quoteDayChangePct;
+    quotePriceDate && purchasePriceDate >= quotePriceDate
+      ? totalGainPct
+      : lot.shares < 0
+        ? -quoteDayChangePct
+        : quoteDayChangePct;
 
   return {
     ...position,
@@ -196,20 +200,28 @@ export interface Totals {
 }
 
 export function totals(positions: EnrichedPosition[]): Totals {
-  const valid = positions.filter((p) => !p.error && p.marketValueUSD > 0);
+  const valid = positions.filter((p) => !p.error && Math.abs(p.marketValueUSD) > 0);
   const cost = valid.reduce((s, p) => s + p.costBasisUSD, 0);
+  const grossCost = valid.reduce((s, p) => s + Math.abs(p.costBasisUSD), 0);
   const value = valid.reduce((s, p) => s + p.marketValueUSD, 0);
   const gain = value - cost;
-  const gainPct = cost > 0 ? gain / cost : 0;
+  const gainPct = grossCost > 0 ? gain / grossCost : 0;
   const dayChangeUSD = valid.reduce((s, p) => {
     const quoteDate = p.quotePriceDate;
     if (quoteDate && p.purchasePriceDate >= quoteDate) return s + p.totalGainUSD;
 
     // Approximate quote-day delta from current value and quoted day percent.
+    if (p.shares < 0) {
+      const quoteDayChangePct = -p.dayChangePct;
+      const currentLiability = Math.abs(p.marketValueUSD);
+      const priorLiability = currentLiability / (1 + quoteDayChangePct);
+      return s - (currentLiability - priorLiability);
+    }
     const priorValue = p.marketValueUSD / (1 + p.dayChangePct);
     return s + (p.marketValueUSD - priorValue);
   }, 0);
-  const priorValue = value - dayChangeUSD;
-  const dayChangePct = priorValue > 0 ? dayChangeUSD / priorValue : 0;
+  const grossValue = valid.reduce((s, p) => s + Math.abs(p.marketValueUSD), 0);
+  const priorGrossValue = grossValue - Math.abs(dayChangeUSD);
+  const dayChangePct = priorGrossValue > 0 ? dayChangeUSD / priorGrossValue : 0;
   return { cost, value, gain, gainPct, dayChangeUSD, dayChangePct, validCount: valid.length };
 }

@@ -38,11 +38,16 @@ function parsePositiveNumber(value: unknown): number | null {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
+function parseNonZeroNumber(value: unknown): number | null {
+  const amount = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(amount) && amount !== 0 ? amount : null;
+}
+
 function parseCostBasisUSD(value: unknown): number | null {
   if (!hasProvidedValue(value)) {
     return DEFAULT_COST_BASIS_USD;
   }
-  return parsePositiveNumber(value);
+  return parseNonZeroNumber(value);
 }
 
 function todayISO(): string {
@@ -55,7 +60,7 @@ function isISODate(value: unknown): value is string {
 
 function explicitPositionShares(position: Position): number | null {
   const shares = position.shares;
-  return typeof shares === 'number' && Number.isFinite(shares) && shares > 0 ? shares : null;
+  return typeof shares === 'number' && Number.isFinite(shares) && shares !== 0 ? shares : null;
 }
 
 function explicitPurchasePriceUSD(position: Position): number | null {
@@ -65,7 +70,7 @@ function explicitPurchasePriceUSD(position: Position): number | null {
 
 function positionCostBasisUSD(position: Position): number {
   const amount = position.costBasisUSD;
-  return typeof amount === 'number' && Number.isFinite(amount) && amount > 0
+  return typeof amount === 'number' && Number.isFinite(amount) && amount !== 0
     ? amount
     : DEFAULT_COST_BASIS_USD;
 }
@@ -232,16 +237,16 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
 
     let buyFields: Pick<Position, 'costBasisUSD' | 'shares'>;
     if (hasShares) {
-      const shares = parsePositiveNumber(rawShares);
+      const shares = parseNonZeroNumber(rawShares);
       if (shares === null) {
-        res.status(400).json({ error: 'shares must be a positive number' });
+        res.status(400).json({ error: 'shares must be a non-zero number' });
         return;
       }
       buyFields = { shares };
     } else {
       const costBasisUSD = parseCostBasisUSD(rawCostBasisUSD);
       if (costBasisUSD === null) {
-        res.status(400).json({ error: 'costBasisUSD must be a positive number' });
+        res.status(400).json({ error: 'costBasisUSD must be a non-zero number' });
         return;
       }
       buyFields = { costBasisUSD };
@@ -321,11 +326,12 @@ app.post('/api/portfolios/:portfolioId/positions/:positionId/sales', async (req,
     }
 
     const purchasedShares = await resolvePurchasedShares(position);
-    if (purchasedShares === null || !Number.isFinite(purchasedShares) || purchasedShares <= 0) {
+    if (purchasedShares === null || !Number.isFinite(purchasedShares) || purchasedShares === 0) {
       res.status(400).json({ error: 'could not resolve purchased shares for position' });
       return;
     }
-    const openShares = purchasedShares - soldShares(position);
+    const maxPurchasedShares = Math.abs(purchasedShares);
+    const openShares = maxPurchasedShares - soldShares(position);
     if (shares > openShares + 1e-8) {
       res.status(400).json({ error: 'sale exceeds open shares' });
       return;
@@ -351,7 +357,7 @@ app.post('/api/portfolios/:portfolioId/positions/:positionId/sales', async (req,
         req.params.portfolioId,
         req.params.positionId,
         sale,
-        purchasedShares,
+        maxPurchasedShares,
       );
       res.status(201).json({ sale, portfolios: updated });
     } catch (err) {

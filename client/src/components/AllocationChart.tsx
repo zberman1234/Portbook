@@ -16,13 +16,13 @@ interface Props {
 
 export function AllocationChart({ enriched, cashUSD = 0 }: Props) {
   const data = useMemo(() => {
-    const valid = enriched.filter((p) => !p.error && p.marketValueUSD > 0);
-    const total = valid.reduce((s, p) => s + p.marketValueUSD, 0) + cashUSD;
+    const valid = enriched.filter((p) => !p.error && Math.abs(p.marketValueUSD) > 0);
+    const total = valid.reduce((s, p) => s + Math.abs(p.marketValueUSD), 0) + cashUSD;
     const holdings = valid
       .map((p) => ({
-        name: p.symbol,
-        value: p.marketValueUSD,
-        pct: total > 0 ? p.marketValueUSD / total : 0,
+        name: p.shares < 0 ? `${p.symbol} short` : p.symbol,
+        value: Math.abs(p.marketValueUSD),
+        pct: total > 0 ? Math.abs(p.marketValueUSD) / total : 0,
       }));
     const rows =
       cashUSD > 0
@@ -35,7 +35,7 @@ export function AllocationChart({ enriched, cashUSD = 0 }: Props) {
     <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-sm font-medium text-neutral-300">Allocation</h2>
-        <span className="text-xs text-neutral-500">by market value</span>
+        <span className="text-xs text-neutral-500">by gross market value</span>
       </div>
       {data.length === 0 ? (
         <div className="flex-1 min-h-64 flex items-center justify-center text-sm text-neutral-500">No data</div>

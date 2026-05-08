@@ -4,7 +4,7 @@ import { Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YA
 import { usePortfolio } from '../hooks/usePortfolio';
 import { api } from '../lib/api';
 import { colorClass, fmtPct, fmtPrice, fmtShares, fmtUSD, fmtUSDSigned } from '../lib/format';
-import { saleProceedsUSD, SHARE_EPSILON } from '../lib/positions';
+import { closingCashFlowUSD, SHARE_EPSILON } from '../lib/positions';
 import type { EnrichedPosition, HistoryRow, PositionSale } from '../types';
 
 type SortKey =
@@ -267,11 +267,13 @@ function SellFormRow({
   const [salePrice, setSalePrice] = useState('');
   const [error, setError] = useState<string | null>(null);
 
+  const isShort = position.shares < 0;
+  const openSharesAbs = Math.abs(position.shares);
   const shareValue = Number(shares);
   const estimatedRemaining =
     Number.isFinite(shareValue) && shareValue > 0
-      ? Math.max(0, position.shares - shareValue)
-      : position.shares;
+      ? Math.max(0, openSharesAbs - shareValue)
+      : openSharesAbs;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -293,8 +295,8 @@ function SellFormRow({
       setError('Please enter a share quantity greater than 0.');
       return;
     }
-    if (shareValue > position.shares + SHARE_EPSILON) {
-      setError(`You only have ${fmtShares(position.shares)} open shares.`);
+    if (shareValue > openSharesAbs + SHARE_EPSILON) {
+      setError(`You only have ${fmtShares(openSharesAbs)} open shares.`);
       return;
     }
 
@@ -325,9 +327,12 @@ function SellFormRow({
         <form onSubmit={handleSubmit} className="rounded-lg border border-neutral-800 bg-neutral-950/80 p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-xs font-medium text-neutral-300">Record sale for {position.symbol}</div>
+              <div className="text-xs font-medium text-neutral-300">
+                {isShort ? 'Record cover' : 'Record sale'} for {position.symbol}
+              </div>
               <div className="text-xs text-neutral-500">
-                Open shares: <span className="num">{fmtShares(position.shares)}</span>
+                Open {isShort ? 'short' : 'long'} shares:{' '}
+                <span className="num">{fmtShares(openSharesAbs)}</span>
               </div>
             </div>
             <button
@@ -351,21 +356,25 @@ function SellFormRow({
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-neutral-500">Shares to sell</label>
+              <label className="mb-1 block text-xs text-neutral-500">
+                Shares to {isShort ? 'cover' : 'sell'}
+              </label>
               <input
                 type="number"
                 value={shares}
                 min="0.000001"
-                max={String(position.shares)}
+                max={String(openSharesAbs)}
                 step="0.000001"
                 inputMode="decimal"
-                placeholder={fmtShares(position.shares)}
+                placeholder={fmtShares(openSharesAbs)}
                 onChange={(event) => setShares(event.target.value)}
                 className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-neutral-500">Sale price/share USD (optional)</label>
+              <label className="mb-1 block text-xs text-neutral-500">
+                {isShort ? 'Cover' : 'Sale'} price/share USD (optional)
+              </label>
               <input
                 type="number"
                 value={salePrice}
@@ -382,11 +391,12 @@ function SellFormRow({
               disabled={selling}
               className="h-[38px] rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-neutral-950 transition hover:bg-emerald-400 disabled:opacity-60"
             >
-              {selling ? 'Saving…' : 'Record sale'}
+              {selling ? 'Saving…' : isShort ? 'Record cover' : 'Record sale'}
             </button>
           </div>
           <div className="mt-2 text-xs text-neutral-500">
-            Remaining after sale: <span className="num text-neutral-300">{fmtShares(estimatedRemaining)}</span>
+            Remaining after {isShort ? 'cover' : 'sale'}:{' '}
+            <span className="num text-neutral-300">{fmtShares(estimatedRemaining)}</span>
           </div>
           {error ? <div className="mt-2 text-xs text-red-400">{error}</div> : null}
         </form>
@@ -425,11 +435,11 @@ function SoldPositionsDropdown({
         className="flex w-full items-center justify-between px-5 py-3 text-left transition hover:bg-neutral-900/50"
       >
         <div>
-          <div className="text-sm font-medium text-neutral-400">Sold</div>
+          <div className="text-sm font-medium text-neutral-400">Closed</div>
           <div className="text-xs text-neutral-600">
-            {rows.length} sale{rows.length === 1 ? '' : 's'} ·{' '}
+            {rows.length} close{rows.length === 1 ? '' : 's'} ·{' '}
             <span className="num">{fmtShares(totalShares)}</span> share
-            {Math.abs(totalShares - 1) <= SHARE_EPSILON ? '' : 's'}
+            {Math.abs(totalShares - 1) <= SHARE_EPSILON ? '' : 's'} closed
           </div>
         </div>
         <span className={`text-sm text-neutral-500 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}>▶</span>
@@ -446,17 +456,17 @@ function SoldPositionsDropdown({
                   <th className="px-3 py-2 text-left">Symbol</th>
                   <th className="px-3 py-2 text-left">Name</th>
                   <th className="px-3 py-2 text-left">Bought</th>
-                  <th className="px-3 py-2 text-left">Sold</th>
-                  <th className="px-3 py-2 text-right">Shares Sold</th>
+                  <th className="px-3 py-2 text-left">Closed</th>
+                  <th className="px-3 py-2 text-right">Shares Closed</th>
                   <th className="px-3 py-2 text-right">Cost/Share</th>
-                  <th className="px-3 py-2 text-right">Sale Price/Share</th>
-                  <th className="px-3 py-2 text-right">Proceeds</th>
+                  <th className="px-3 py-2 text-right">Close Price/Share</th>
+                  <th className="px-3 py-2 text-right">Cash Flow</th>
                   <th className="px-3 py-2" />
                 </tr>
               </thead>
               <tbody>
                 {rows.map(({ position, sale }) => {
-                  const proceeds = saleProceedsUSD(sale);
+                  const cashFlow = closingCashFlowUSD(position, sale);
                   return (
                     <tr key={sale.id} className="border-t border-neutral-800">
                       <td className="px-3 py-2 font-mono text-neutral-300">{position.symbol}</td>
@@ -471,7 +481,7 @@ function SoldPositionsDropdown({
                         {sale.salePriceUSD === undefined ? '—' : fmtPrice(sale.salePriceUSD)}
                       </td>
                       <td className="px-3 py-2 text-right num text-neutral-100">
-                        {proceeds > 0 ? fmtUSD(proceeds) : '—'}
+                        {cashFlow === 0 ? '—' : fmtUSDSigned(cashFlow)}
                       </td>
                       <td className="px-3 py-2 text-right">
                       <button
@@ -737,7 +747,7 @@ export function PositionsTable({
   const [soldOpen, setSoldOpen] = useState(false);
 
   const sorted = useMemo(() => {
-    const rows = enriched.filter((position) => position.shares > SHARE_EPSILON);
+    const rows = enriched.filter((position) => Math.abs(position.shares) > SHARE_EPSILON);
     rows.sort((a, b) => {
       const av = a[sortKey];
       const bv = b[sortKey];
@@ -796,7 +806,7 @@ export function PositionsTable({
       <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-800">
         <h2 className="text-sm font-medium text-neutral-300">Positions</h2>
         <span className="text-xs text-neutral-500">
-          {sorted.length} active · {soldRows.length} sold
+          {sorted.length} active · {soldRows.length} closed
         </span>
       </div>
       <div className="overflow-auto">
@@ -824,6 +834,7 @@ export function PositionsTable({
           <tbody>
             {sorted.map((p) => {
               const isExpanded = expandedPositionId === p.id;
+              const isShort = p.shares < 0;
               return (
                 <Fragment key={p.id}>
                   <tr
@@ -831,7 +842,12 @@ export function PositionsTable({
                     className="cursor-pointer border-t border-neutral-800 hover:bg-neutral-900/40"
                   >
                     <td className="px-3 py-2">
-                      <div className="font-mono text-emerald-400">{p.symbol}</div>
+                      <div className={isShort ? 'font-mono text-red-300' : 'font-mono text-emerald-400'}>
+                        {p.symbol}
+                      </div>
+                      {isShort ? (
+                        <div className="text-[10px] leading-tight text-red-400/80">SHORT</div>
+                      ) : null}
                       {p.exchange ? (
                         <div className="text-[10px] leading-tight text-neutral-500">{p.exchange}</div>
                       ) : null}
@@ -863,11 +879,11 @@ export function PositionsTable({
                             e.stopPropagation();
                             openSellForm(p.id);
                           }}
-                          disabled={selling || removing || p.shares <= SHARE_EPSILON}
-                          title="Record sale"
+                          disabled={selling || removing || Math.abs(p.shares) <= SHARE_EPSILON}
+                          title={isShort ? 'Record cover' : 'Record sale'}
                           className="px-2 py-1 text-xs text-neutral-500 transition hover:bg-neutral-800/60 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          Sell
+                          {isShort ? 'Cover' : 'Sell'}
                         </button>
                         <button
                           onClick={(e) => {

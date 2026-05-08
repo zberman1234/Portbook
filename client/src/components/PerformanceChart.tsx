@@ -16,7 +16,7 @@ import {
 import { api } from '../lib/api';
 import { costBasisUSD, explicitPurchasePriceUSD, purchaseLot } from '../lib/calc';
 import { fmtPct, fmtUSD, fmtUSDSigned } from '../lib/format';
-import { saleProceedsUSD } from '../lib/positions';
+import { closingCashFlowUSD } from '../lib/positions';
 import type { HistoryRow, Position } from '../types';
 
 interface Props {
@@ -102,13 +102,13 @@ function rangeReturn(rows: ChartRow[], key: string, startDate: string, endDate: 
   if (!start || !end) return null;
   const startValue = start[key];
   const endValue = end[key];
-  if (typeof startValue !== 'number' || typeof endValue !== 'number' || startValue <= 0) {
+  if (typeof startValue !== 'number' || typeof endValue !== 'number' || startValue === 0) {
     return null;
   }
   const gain = endValue - startValue;
   return {
     gain,
-    pct: gain / startValue,
+    pct: gain / Math.abs(startValue),
     startValue,
     endValue,
   };
@@ -245,8 +245,10 @@ export function PerformanceChart({ positions }: Props) {
           .reduce((sum, sale) => sum + sale.shares, 0);
         const saleCash = sales
           .filter((sale) => sale.saleDate <= r.date)
-          .reduce((sum, sale) => sum + saleProceedsUSD(sale), 0);
-        usdByDate.set(r.date, priceUSD * Math.max(0, lot.shares - soldShares) + saleCash);
+          .reduce((sum, sale) => sum + closingCashFlowUSD(p, sale), 0);
+        const openSharesAbs = Math.max(0, Math.abs(lot.shares) - soldShares);
+        const openShares = Math.sign(lot.shares) * openSharesAbs;
+        usdByDate.set(r.date, priceUSD * openShares + saleCash);
       });
 
       return { costBasisUSD: lot.costBasisUSD, usdByDate };
@@ -262,33 +264,37 @@ export function PerformanceChart({ positions }: Props) {
         const buyPrice = firstPriceOnOrAfter(sortedDates, priceByDate, p.purchaseDate);
         if (buyPrice === null || buyPrice <= 0) return null;
         const costBasis = costBasisByPosition[i];
-        return costBasis > 0 ? costBasis / buyPrice : null;
+        return costBasis !== 0 ? costBasis / buyPrice : null;
       });
       return { sharesPerPosition, priceByDate, sortedDates };
     });
 
     const rows: ChartRow[] = [];
-    const prevPerSymbol = new Array<number>(positions.length).fill(0);
+    const prevPerSymbol = new Array<number | null>(positions.length).fill(null);
     const benchLastPrice: (number | null)[] = benchmarkQueries.map(() => null);
     for (const d of allDates) {
       let value = 0;
       let cost = 0;
+      let grossCost = 0;
       for (let i = 0; i < positions.length; i++) {
         const p = positions[i];
         const active = p.purchaseDate <= d;
         if (!active) continue;
-        cost += costBasisByPosition[i];
+        const positionCost = costBasisByPosition[i];
+        cost += positionCost;
+        grossCost += Math.abs(positionCost);
         const snap = snaps[i];
         if (!snap) continue;
         const v = snap.usdByDate.get(d);
         if (typeof v === 'number') {
           prevPerSymbol[i] = v;
           value += v;
-        } else if (prevPerSymbol[i] > 0) {
-          value += prevPerSymbol[i];
+        } else {
+          const previousValue = prevPerSymbol[i];
+          if (previousValue !== null) value += previousValue;
         }
       }
-      if (cost <= 0) continue;
+      if (grossCost <= 0) continue;
 
       const row: ChartRow = { date: d, value, cost };
 
@@ -321,8 +327,8 @@ export function PerformanceChart({ positions }: Props) {
         if (cur.cost !== prev.cost) continue;
         const a = cur[key];
         const b = prev[key];
-        if (typeof a !== 'number' || typeof b !== 'number' || b <= 0) continue;
-        out.push(a / b - 1);
+        if (typeof a !== 'number' || typeof b !== 'number' || b === 0) continue;
+        out.push((a - b) / Math.abs(b));
       }
       return out;
     }
@@ -331,11 +337,11 @@ export function PerformanceChart({ positions }: Props) {
     const endCost = lastRow?.cost ?? 0;
 
     function totalReturn(key: string): { gain: number; pct: number; endValue: number } | null {
-      if (!lastRow || endCost <= 0) return null;
+      if (!lastRow || endCost === 0) return null;
       const endValue = lastRow[key];
       if (typeof endValue !== 'number') return null;
       const gain = endValue - endCost;
-      return { gain, pct: gain / endCost, endValue };
+      return { gain, pct: gain / Math.abs(endCost), endValue };
     }
 
     type Stat = {

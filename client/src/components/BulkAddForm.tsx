@@ -1,7 +1,14 @@
 import { useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { usePortfolio } from '../hooks/usePortfolio';
+import { useEnrichedPositions } from '../hooks/usePrices';
 import { DEFAULT_COST_BASIS_USD } from '../lib/calc';
+import {
+  applySalesToEnrichedPositions,
+  openLongPositionsForSymbol,
+  planLongShareSale,
+  SHARE_EPSILON,
+} from '../lib/positions';
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -28,6 +35,7 @@ function extractTickers(text: string): string[] {
 
 type RowStatus = 'pending' | 'adding' | 'added' | 'skipped' | 'failed';
 type BuyMode = 'amount' | 'shares';
+type TradeAction = 'buy' | 'sell';
 
 interface Row {
   ticker: string;
@@ -37,10 +45,13 @@ interface Row {
 }
 
 export function BulkAddForm() {
-  const { add } = usePortfolio();
+  const { add, positions, addSale } = usePortfolio();
+  const { enriched: savedEnriched } = useEnrichedPositions(positions);
+  const enriched = applySalesToEnrichedPositions(savedEnriched);
   const [text, setText] = useState('');
   const [date, setDate] = useState(todayISO());
   const [buyMode, setBuyMode] = useState<BuyMode>('amount');
+  const [action, setAction] = useState<TradeAction>('buy');
   const [amount, setAmount] = useState(String(DEFAULT_COST_BASIS_USD));
   const [shares, setShares] = useState('');
   const [purchasePrice, setPurchasePrice] = useState('');
@@ -70,25 +81,16 @@ export function BulkAddForm() {
       setError('Purchase date cannot be in the future.');
       return;
     }
-    const buyFields =
-      buyMode === 'amount'
-        ? (() => {
-            const costBasisUSD = Number(amount);
-            if (!Number.isFinite(costBasisUSD) || costBasisUSD <= 0) {
-              setError('Please enter an investment amount greater than $0.');
-              return null;
-            }
-            return { costBasisUSD };
-          })()
-        : (() => {
-            const shareQuantity = Number(shares);
-            if (!Number.isFinite(shareQuantity) || shareQuantity <= 0) {
-              setError('Please enter a share quantity greater than 0.');
-              return null;
-            }
-            return { shares: shareQuantity };
-          })();
-    if (!buyFields) return;
+    const amountValue = Number(amount);
+    const shareQuantity = Number(shares);
+    if (buyMode === 'amount' && (!Number.isFinite(amountValue) || amountValue <= 0)) {
+      setError('Please enter an amount greater than $0.');
+      return;
+    }
+    if (buyMode === 'shares' && (!Number.isFinite(shareQuantity) || shareQuantity <= 0)) {
+      setError('Please enter a share quantity greater than 0.');
+      return;
+    }
 
     const purchasePriceValue = purchasePrice.trim() === '' ? undefined : Number(purchasePrice);
     if (
@@ -107,6 +109,72 @@ export function BulkAddForm() {
     const initial: Row[] = detected.map((ticker) => ({ ticker, status: 'pending' }));
     setRows(initial);
     setRunning(true);
+
+    async function sellResolvedSymbol({
+      symbol,
+      name,
+      exchange,
+      currency,
+    }: {
+      symbol: string;
+      name?: string;
+      exchange?: string;
+      currency?: string;
+    }) {
+      const sellShares = async (requestedShares: number, salePriceUSD: number | undefined) => {
+        const plan = planLongShareSale(enriched, symbol, date, requestedShares);
+        for (const sale of plan.sales) {
+          await addSale({
+            positionId: sale.position.id,
+            sale: {
+              saleDate: date,
+              shares: sale.shares,
+              ...(salePriceUSD !== undefined ? { salePriceUSD } : {}),
+            },
+          });
+        }
+        if (plan.shortShares > SHARE_EPSILON) {
+          await add({
+            symbol,
+            name,
+            exchange,
+            currency,
+            purchaseDate: date,
+            shares: -plan.shortShares,
+            ...(salePriceUSD !== undefined ? { purchasePriceUSD: salePriceUSD } : {}),
+          });
+        }
+        return plan;
+      };
+
+      if (buyMode === 'shares') {
+        return sellShares(shareQuantity, purchasePriceValue);
+      }
+
+      const openLongs = openLongPositionsForSymbol(enriched, symbol, date);
+      if (openLongs.length === 0) {
+        await add({
+          symbol,
+          name,
+          exchange,
+          currency,
+          purchaseDate: date,
+          costBasisUSD: -amountValue,
+          ...(purchasePriceValue !== undefined ? { purchasePriceUSD: purchasePriceValue } : {}),
+        });
+        return { sales: [], shortShares: amountValue };
+      }
+
+      const salePriceUSD =
+        purchasePriceValue ??
+        (date === todayISO()
+          ? openLongs.find((position) => position.currentPriceUSD > 0)?.currentPriceUSD
+          : undefined);
+      if (!salePriceUSD) {
+        throw new Error('Enter a sell price/share to sell an existing position by USD amount.');
+      }
+      return sellShares(amountValue / salePriceUSD, salePriceUSD);
+    }
 
     for (const { ticker } of initial) {
       updateRow(ticker, { status: 'adding' });
@@ -133,15 +201,19 @@ export function BulkAddForm() {
           /* fall through to raw symbol */
         }
 
-        await add({
-          symbol,
-          name,
-          exchange,
-          currency,
-          purchaseDate: date,
-          ...buyFields,
-          ...(purchasePriceValue !== undefined ? { purchasePriceUSD: purchasePriceValue } : {}),
-        });
+        if (action === 'buy') {
+          await add({
+            symbol,
+            name,
+            exchange,
+            currency,
+            purchaseDate: date,
+            ...(buyMode === 'amount' ? { costBasisUSD: amountValue } : { shares: shareQuantity }),
+            ...(purchasePriceValue !== undefined ? { purchasePriceUSD: purchasePriceValue } : {}),
+          });
+        } else {
+          await sellResolvedSymbol({ symbol, name, exchange, currency });
+        }
         updateRow(ticker, {
           status: 'added',
           resolvedSymbol: symbol,
@@ -163,6 +235,7 @@ export function BulkAddForm() {
     setAmount(String(DEFAULT_COST_BASIS_USD));
     setShares('');
     setPurchasePrice('');
+    setAction('buy');
     setRows([]);
     setError(null);
   }
@@ -184,7 +257,7 @@ export function BulkAddForm() {
         </div>
         <div className="flex flex-col gap-3">
           <div>
-            <label className="text-xs text-neutral-500 block mb-1">Purchase date</label>
+            <label className="text-xs text-neutral-500 block mb-1">Trade date</label>
             <input
               type="date"
               value={date}
@@ -195,9 +268,13 @@ export function BulkAddForm() {
             />
           </div>
           <div>
+            <label className="text-xs text-neutral-500 block mb-1">Action</label>
+            <TradeActionSelect action={action} onChange={setAction} />
+          </div>
+          <div>
             <div className="flex items-center justify-between gap-2 mb-1">
               <label className="text-xs text-neutral-500">
-                {buyMode === 'amount' ? 'Amount per ticker (USD)' : 'Shares per ticker'}
+                {buyMode === 'amount' ? 'Amount per ticker' : 'Shares per ticker'}
               </label>
               <BuyModeToggle mode={buyMode} onChange={setBuyMode} />
             </div>
@@ -261,7 +338,7 @@ export function BulkAddForm() {
             >
               {running
                 ? `Adding ${rows.filter((r) => r.status === 'added' || r.status === 'failed').length}/${rows.length}…`
-                : `Add ${detected.length || ''} position${detected.length === 1 ? '' : 's'}`.trim()}
+                : `${action === 'sell' ? 'Sell' : 'Buy'} ${detected.length || ''} position${detected.length === 1 ? '' : 's'}`.trim()}
             </button>
             <button
               type="button"
@@ -298,6 +375,33 @@ export function BulkAddForm() {
         </ul>
       ) : null}
     </form>
+  );
+}
+
+function TradeActionSelect({
+  action,
+  onChange,
+}: {
+  action: TradeAction;
+  onChange: (action: TradeAction) => void;
+}) {
+  const tone = action === 'buy' ? 'text-emerald-400' : 'text-red-400';
+  return (
+    <select
+      value={action}
+      onChange={(event) => onChange(event.target.value as TradeAction)}
+      className={`h-[38px] w-full appearance-none rounded-md border border-neutral-700 bg-neutral-900 pl-2.5 pr-5 py-2 text-sm font-medium ${tone} focus:outline-none`}
+      style={{
+        backgroundImage:
+          "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path d='M3 4.5l3 3 3-3' stroke='%23737373' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>\")",
+        backgroundRepeat: 'no-repeat',
+        backgroundPosition: 'right 0.45rem center',
+        backgroundSize: '0.7rem 0.7rem',
+      }}
+    >
+      <option value="buy">Buy</option>
+      <option value="sell">Sell</option>
+    </select>
   );
 }
 

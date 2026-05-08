@@ -1,5 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
+import { remainingShares, SHARE_EPSILON } from '../lib/positions';
 import type { Portfolio } from '../types';
+
+function activePositionCount(portfolio: Portfolio): number {
+  const symbols = new Set<string>();
+
+  for (const position of portfolio.positions) {
+    if (typeof position.shares === 'number' && Number.isFinite(position.shares)) {
+      const openShares = remainingShares({ shares: position.shares, sales: position.sales });
+      if (Math.abs(openShares) <= SHARE_EPSILON) continue;
+    }
+
+    const symbol = position.symbol.trim().toUpperCase();
+    if (symbol) symbols.add(symbol);
+  }
+
+  return symbols.size;
+}
 
 interface Props {
   portfolios: Portfolio[];
@@ -207,7 +224,7 @@ export function PortfolioTabs({
                       : 'bg-neutral-800 text-neutral-500'
                   }`}
                 >
-                  {p.positions.length}
+                  {activePositionCount(p)}
                 </span>
               </button>
               <button

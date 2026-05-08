@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState, type FormEvent } from 'react';
+import { Fragment, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { usePortfolio } from '../hooks/usePortfolio';
@@ -38,7 +38,7 @@ const columns: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
   { key: 'purchaseDate', label: 'Purchased' },
   { key: 'costBasisUSD', label: 'Cost Basis', align: 'right' },
   { key: 'shares', label: 'Shares', align: 'right' },
-  { key: 'purchasePriceUSD', label: 'Cost/Share', align: 'right' },
+  { key: 'purchasePriceUSD', label: 'Price', align: 'right' },
   { key: 'currentPriceUSD', label: 'Last', align: 'right' },
   { key: 'dayChangePct', label: 'Day %', align: 'right' },
   { key: 'marketValueUSD', label: 'Market Value', align: 'right' },
@@ -252,18 +252,22 @@ function fmtPriceSigned(n: number | undefined | null): string {
 
 function SellFormRow({
   position,
+  defaultShares,
   selling,
   onCancel,
   onSubmit,
 }: {
   position: EnrichedPosition;
+  defaultShares: number;
   selling: boolean;
   onCancel: () => void;
   onSubmit: (sale: { saleDate: string; shares: number; salePriceUSD?: number }) => Promise<unknown>;
 }) {
   const today = todayISO();
   const [saleDate, setSaleDate] = useState(today);
-  const [shares, setShares] = useState('');
+  const [shares, setShares] = useState(() =>
+    defaultShares > 0 ? fmtShares(defaultShares).replace(/,/g, '') : '',
+  );
   const [salePrice, setSalePrice] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -410,6 +414,192 @@ type SoldRow = {
   sale: PositionSale;
 };
 
+type ActivePositionRow = EnrichedPosition & {
+  groupKey: string;
+  lots: EnrichedPosition[];
+  purchaseDateLabel: string;
+  purchaseCount: number;
+};
+
+type SoldGroup = {
+  groupKey: string;
+  symbol: string;
+  name: string;
+  exchange: string;
+  rows: SoldRow[];
+  purchaseDateLabel: string;
+  purchaseCount: number;
+  saleDateLabel: string;
+  saleCount: number;
+  shares: number;
+  purchasePriceUSD: number;
+  salePriceUSD: number | null;
+  cashFlowUSD: number;
+};
+
+function groupKeyForSymbol(symbol: string): string {
+  return symbol.trim().toUpperCase();
+}
+
+function dateSummary(items: { key: string; date: string }[]) {
+  const datesByItem = new Map<string, string>();
+  for (const item of items) {
+    if (item.date && !datesByItem.has(item.key)) {
+      datesByItem.set(item.key, item.date);
+    }
+  }
+
+  const dates = [...datesByItem.values()].sort((a, b) => a.localeCompare(b));
+  return {
+    firstDate: dates[0] ?? '—',
+    count: dates.length,
+  };
+}
+
+function DateWithCountValue({ date, count, label }: { date: string; count: number; label: string }) {
+  const additionalItems = Math.max(0, count - 1);
+
+  return (
+    <span className="whitespace-nowrap">
+      <span>{date}</span>
+      {additionalItems > 0 ? (
+        <sup className="ml-0.5 text-[9px] font-medium text-neutral-500" title={`${count} ${label}`}>
+          +{additionalItems}
+        </sup>
+      ) : null}
+    </span>
+  );
+}
+
+function weightedAverageByShares(rows: { shares: number; value: number | null | undefined }[]): number | null {
+  const totals = rows.reduce<{ shares: number; value: number }>(
+    (acc, row) => {
+      if (typeof row.value !== 'number' || !Number.isFinite(row.value)) return acc;
+      const shares = Math.abs(row.shares);
+      return {
+        shares: acc.shares + shares,
+        value: acc.value + row.value * shares,
+      };
+    },
+    { shares: 0, value: 0 },
+  );
+  return totals.shares > SHARE_EPSILON ? totals.value / totals.shares : null;
+}
+
+function aggregateDayChangePct(lots: EnrichedPosition[]): number {
+  const totals = lots.reduce(
+    (acc, lot) => {
+      if (lot.error || !Number.isFinite(lot.dayChangePct) || !Number.isFinite(lot.marketValueUSD)) {
+        return acc;
+      }
+      const weight = Math.abs(lot.marketValueUSD);
+      return {
+        weight: acc.weight + weight,
+        value: acc.value + lot.dayChangePct * weight,
+      };
+    },
+    { weight: 0, value: 0 },
+  );
+  return totals.weight > SHARE_EPSILON ? totals.value / totals.weight : 0;
+}
+
+function aggregateActiveGroup(groupKey: string, lots: EnrichedPosition[]): ActivePositionRow {
+  const sortedLots = [...lots].sort(
+    (a, b) => a.purchaseDate.localeCompare(b.purchaseDate) || a.createdAt.localeCompare(b.createdAt),
+  );
+  const primary = sortedLots[0];
+  const validLots = sortedLots.filter((lot) => !lot.error);
+  const shares = sortedLots.reduce((sum, lot) => sum + lot.shares, 0);
+  const costBasisUSD = sortedLots.reduce((sum, lot) => sum + lot.costBasisUSD, 0);
+  const marketValueUSD = validLots.reduce((sum, lot) => sum + lot.marketValueUSD, 0);
+  const totalGainUSD = marketValueUSD - costBasisUSD;
+  const grossCostBasisUSD = sortedLots.reduce((sum, lot) => sum + Math.abs(lot.costBasisUSD), 0);
+  const grossShares = sortedLots.reduce((sum, lot) => sum + Math.abs(lot.shares), 0);
+  const firstPricedLot = validLots[0] ?? primary;
+  const purchaseSummary = dateSummary(sortedLots.map((lot) => ({ key: lot.id, date: lot.purchaseDate })));
+
+  return {
+    ...primary,
+    id: groupKey,
+    groupKey,
+    lots: sortedLots,
+    purchaseDateLabel: purchaseSummary.firstDate,
+    purchaseCount: purchaseSummary.count,
+    shares,
+    purchaseDate: sortedLots[0]?.purchaseDate ?? primary.purchaseDate,
+    purchasePriceDate: sortedLots[0]?.purchasePriceDate ?? primary.purchasePriceDate,
+    purchasePriceUSD: grossShares > SHARE_EPSILON ? grossCostBasisUSD / grossShares : 0,
+    purchasePriceNative: firstPricedLot.purchasePriceNative,
+    currentPriceUSD: firstPricedLot.currentPriceUSD,
+    currentPriceNative: firstPricedLot.currentPriceNative,
+    costBasisUSD,
+    marketValueUSD,
+    totalGainUSD,
+    totalGainPct: grossCostBasisUSD > SHARE_EPSILON ? totalGainUSD / grossCostBasisUSD : 0,
+    dayChangePct: aggregateDayChangePct(sortedLots),
+    error: sortedLots.some((lot) => lot.error) ? sortedLots.find((lot) => lot.error)?.error : undefined,
+    sales: sortedLots.flatMap((lot) => lot.sales ?? []),
+    createdAt: sortedLots[0]?.createdAt ?? primary.createdAt,
+  };
+}
+
+function groupActivePositions(positions: EnrichedPosition[]): ActivePositionRow[] {
+  const groups = new Map<string, EnrichedPosition[]>();
+  for (const position of positions) {
+    if (Math.abs(position.shares) <= SHARE_EPSILON) continue;
+    const key = groupKeyForSymbol(position.symbol);
+    groups.set(key, [...(groups.get(key) ?? []), position]);
+  }
+  return [...groups.entries()].map(([groupKey, lots]) => aggregateActiveGroup(groupKey, lots));
+}
+
+function groupSoldRows(rows: SoldRow[]): SoldGroup[] {
+  const groups = new Map<string, SoldRow[]>();
+  for (const row of rows) {
+    const key = groupKeyForSymbol(row.position.symbol);
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+
+  return [...groups.entries()]
+    .map(([groupKey, groupRows]) => {
+      const sortedRows = [...groupRows].sort(
+        (a, b) =>
+          b.sale.saleDate.localeCompare(a.sale.saleDate) ||
+          a.position.purchaseDate.localeCompare(b.position.purchaseDate),
+      );
+      const primary = sortedRows[0].position;
+      const shares = sortedRows.reduce((sum, row) => sum + row.sale.shares, 0);
+      const purchaseSummary = dateSummary(
+        sortedRows.map((row) => ({ key: row.position.id, date: row.position.purchaseDate })),
+      );
+      const saleSummary = dateSummary(sortedRows.map((row) => ({ key: row.sale.id, date: row.sale.saleDate })));
+      return {
+        groupKey,
+        symbol: primary.symbol,
+        name: primary.name,
+        exchange: primary.exchange,
+        rows: sortedRows,
+        purchaseDateLabel: purchaseSummary.firstDate,
+        purchaseCount: purchaseSummary.count,
+        saleDateLabel: saleSummary.firstDate,
+        saleCount: saleSummary.count,
+        shares,
+        purchasePriceUSD:
+          weightedAverageByShares(
+            sortedRows.map((row) => ({ shares: row.sale.shares, value: row.position.purchasePriceUSD })),
+          ) ?? 0,
+        salePriceUSD: weightedAverageByShares(
+          sortedRows.map((row) => ({ shares: row.sale.shares, value: row.sale.salePriceUSD })),
+        ),
+        cashFlowUSD: sortedRows.reduce(
+          (sum, row) => sum + closingCashFlowUSD(row.position, row.sale),
+          0,
+        ),
+      };
+    })
+    .sort((a, b) => b.rows[0].sale.saleDate.localeCompare(a.rows[0].sale.saleDate));
+}
+
 function SoldPositionsDropdown({
   rows,
   open,
@@ -423,9 +613,65 @@ function SoldPositionsDropdown({
   onToggle: () => void;
   onUndoSale: (positionId: string, saleId: string) => Promise<unknown>;
 }) {
+  const [expandedGroupKey, setExpandedGroupKey] = useState<string | null>(null);
+  const [undoPopoverGroupKey, setUndoPopoverGroupKey] = useState<string | null>(null);
+  const [selectedUndoSaleIds, setSelectedUndoSaleIds] = useState<string[]>([]);
+  const groups = useMemo(() => groupSoldRows(rows), [rows]);
+
+  function closeUndoPopover() {
+    setUndoPopoverGroupKey(null);
+    setSelectedUndoSaleIds([]);
+  }
+
+  useEffect(() => {
+    if (!undoPopoverGroupKey) return;
+
+    function handleMouseDown(event: MouseEvent) {
+      if (event.target instanceof Element && event.target.closest('[data-undo-popover-root]')) return;
+      closeUndoPopover();
+    }
+
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [undoPopoverGroupKey]);
+
+  async function undoSaleRows(saleRows: SoldRow[]) {
+    for (const row of saleRows) {
+      await onUndoSale(row.position.id, row.sale.id);
+    }
+    closeUndoPopover();
+  }
+
+  function toggleUndoPopover(group: SoldGroup) {
+    if (group.rows.length <= 1) {
+      void undoSaleRows(group.rows);
+      return;
+    }
+
+    const opening = undoPopoverGroupKey !== group.groupKey;
+    setUndoPopoverGroupKey(opening ? group.groupKey : null);
+    setSelectedUndoSaleIds(opening ? group.rows.map((row) => row.sale.id) : []);
+  }
+
+  function toggleUndoSale(saleId: string) {
+    setSelectedUndoSaleIds((current) =>
+      current.includes(saleId) ? current.filter((id) => id !== saleId) : [...current, saleId],
+    );
+  }
+
+  async function undoSelectedSales(group: SoldGroup) {
+    const selectedRows = group.rows.filter((row) => selectedUndoSaleIds.includes(row.sale.id));
+    if (selectedRows.length === 0) return;
+    await undoSaleRows(selectedRows);
+  }
+
   if (rows.length === 0) return null;
 
   const totalShares = rows.reduce((sum, row) => sum + row.sale.shares, 0);
+  const closedTickerText =
+    groups.length === rows.length
+      ? `${rows.length} close${rows.length === 1 ? '' : 's'}`
+      : `${rows.length} closes across ${groups.length} ticker${groups.length === 1 ? '' : 's'}`;
 
   return (
     <div className="border-t border-neutral-800">
@@ -437,7 +683,7 @@ function SoldPositionsDropdown({
         <div>
           <div className="text-sm font-medium text-neutral-400">Closed</div>
           <div className="text-xs text-neutral-600">
-            {rows.length} close{rows.length === 1 ? '' : 's'} ·{' '}
+            {closedTickerText} ·{' '}
             <span className="num">{fmtShares(totalShares)}</span> share
             {Math.abs(totalShares - 1) <= SHARE_EPSILON ? '' : 's'} closed
           </div>
@@ -451,50 +697,198 @@ function SoldPositionsDropdown({
         <div className="overflow-hidden">
           <div className="overflow-auto border-t border-neutral-800" style={{ maxHeight: 'min(40vh, 360px)' }}>
             <table className="w-full text-sm">
-              <thead className="bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500 sticky top-0 z-10">
+              <thead className="sticky top-0 z-10 bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
                 <tr>
                   <th className="px-3 py-2 text-left">Symbol</th>
                   <th className="px-3 py-2 text-left">Name</th>
-                  <th className="px-3 py-2 text-left">Bought</th>
-                  <th className="px-3 py-2 text-left">Closed</th>
-                  <th className="px-3 py-2 text-right">Shares Closed</th>
-                  <th className="px-3 py-2 text-right">Cost/Share</th>
-                  <th className="px-3 py-2 text-right">Close Price/Share</th>
+                  <th className="min-w-[8.5rem] px-3 py-2 text-left whitespace-nowrap">Bought</th>
+                  <th className="min-w-[8.5rem] px-3 py-2 text-left whitespace-nowrap">Closed</th>
+                  <th className="px-3 py-2 text-right">Shares</th>
+                  <th className="px-3 py-2 text-right">Price</th>
+                  <th className="px-3 py-2 text-right">Close Price</th>
                   <th className="px-3 py-2 text-right">Cash Flow</th>
                   <th className="px-3 py-2" />
                 </tr>
               </thead>
               <tbody>
-                {rows.map(({ position, sale }) => {
-                  const cashFlow = closingCashFlowUSD(position, sale);
+                {groups.map((group) => {
+                  const isPopoverOpen = undoPopoverGroupKey === group.groupKey;
+                  const hasMultiple = group.rows.length > 1;
+                  const isExpanded = hasMultiple && expandedGroupKey === group.groupKey;
                   return (
-                    <tr key={sale.id} className="border-t border-neutral-800">
-                      <td className="px-3 py-2 font-mono text-neutral-300">{position.symbol}</td>
-                      <td className="max-w-[22ch] truncate px-3 py-2 text-neutral-300" title={position.name}>
-                        {position.name}
+                    <Fragment key={group.groupKey}>
+                    <tr
+                      onClick={
+                        hasMultiple
+                          ? () =>
+                            setExpandedGroupKey((current) =>
+                              current === group.groupKey ? null : group.groupKey,
+                            )
+                          : undefined
+                      }
+                      className={`border-t border-neutral-800 hover:bg-neutral-900/40 ${hasMultiple ? 'cursor-pointer' : ''
+                        }`}
+                    >
+                      <td className="px-3 py-2">
+                        <div className="font-mono text-neutral-300">{group.symbol}</div>
+                        <div className="text-[10px] leading-tight text-neutral-500">
+                          {group.rows.length} close{group.rows.length === 1 ? '' : 's'}
+                        </div>
                       </td>
-                      <td className="px-3 py-2 num text-neutral-400">{position.purchaseDate}</td>
-                      <td className="px-3 py-2 num text-neutral-400">{sale.saleDate}</td>
-                      <td className="px-3 py-2 text-right num text-neutral-300">{fmtShares(sale.shares)}</td>
-                      <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(position.purchasePriceUSD)}</td>
+                      <td className="max-w-[18ch] truncate px-3 py-2 text-neutral-300" title={group.name}>
+                        {group.name}
+                      </td>
+                      <td className="min-w-[8.5rem] px-3 py-2 num text-neutral-400 whitespace-nowrap">
+                        <DateWithCountValue
+                          date={group.purchaseDateLabel}
+                          count={group.purchaseCount}
+                          label="purchases"
+                        />
+                      </td>
+                      <td className="min-w-[8.5rem] px-3 py-2 num text-neutral-400 whitespace-nowrap">
+                        <DateWithCountValue date={group.saleDateLabel} count={group.saleCount} label="closes" />
+                      </td>
+                      <td className="px-3 py-2 text-right num text-neutral-300">{fmtShares(group.shares)}</td>
+                      <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(group.purchasePriceUSD)}</td>
                       <td className="px-3 py-2 text-right num text-neutral-300">
-                        {sale.salePriceUSD === undefined ? '—' : fmtPrice(sale.salePriceUSD)}
+                        {group.salePriceUSD === null ? '—' : fmtPrice(group.salePriceUSD)}
                       </td>
                       <td className="px-3 py-2 text-right num text-neutral-100">
-                        {cashFlow === 0 ? '—' : fmtUSDSigned(cashFlow)}
+                        {group.cashFlowUSD === 0 ? '—' : fmtUSDSigned(group.cashFlowUSD)}
                       </td>
-                      <td className="px-3 py-2 text-right">
-                      <button
-                        type="button"
-                        disabled={undoingSale}
-                        onClick={() => onUndoSale(position.id, sale.id)}
-                        className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
-                        title="Undo sale"
-                      >
-                        {undoingSale ? 'Undoing…' : 'Undo'}
-                      </button>
+                      <td className="px-3 py-2 text-right" onClick={(event) => event.stopPropagation()}>
+                        <div className="relative inline-block text-left" data-undo-popover-root>
+                          <button
+                            type="button"
+                            disabled={undoingSale}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleUndoPopover(group);
+                            }}
+                            className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
+                            title={hasMultiple ? 'Choose closes to undo' : 'Undo sale'}
+                          >
+                            {undoingSale ? 'Undoing…' : 'Undo'}
+                          </button>
+                          {isPopoverOpen ? (
+                            <div className="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
+                              <div className="mb-2 flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-xs font-medium text-neutral-300">Undo closes</div>
+                                  <div className="text-[11px] text-neutral-500">
+                                    Choose which {group.symbol} closes to undo.
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={closeUndoPopover}
+                                  className="rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+                                >
+                                  x
+                                </button>
+                              </div>
+                              <div className="max-h-48 overflow-auto rounded border border-neutral-800">
+                                {group.rows.map(({ position, sale }) => {
+                                  const cashFlow = closingCashFlowUSD(position, sale);
+                                  return (
+                                    <label
+                                      key={sale.id}
+                                      className="flex cursor-pointer items-center gap-2 border-t border-neutral-800 px-2 py-2 first:border-t-0 hover:bg-neutral-900/60"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedUndoSaleIds.includes(sale.id)}
+                                        disabled={undoingSale}
+                                        onChange={() => toggleUndoSale(sale.id)}
+                                        className="h-3.5 w-3.5 accent-emerald-500"
+                                      />
+                                      <span className="min-w-0 flex-1">
+                                        <span className="block truncate text-xs text-neutral-300">
+                                          {sale.saleDate}
+                                        </span>
+                                        <span className="block text-[11px] text-neutral-500">
+                                          <span className="num">{fmtShares(sale.shares)}</span> shares · bought{' '}
+                                          {position.purchaseDate}
+                                        </span>
+                                      </span>
+                                      <span className="num text-xs text-neutral-400">
+                                        {cashFlow === 0 ? '—' : fmtUSDSigned(cashFlow)}
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                              <div className="mt-3 flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void undoSaleRows(group.rows)}
+                                  disabled={undoingSale}
+                                  className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-400 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
+                                >
+                                  Undo all
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void undoSelectedSales(group)}
+                                  disabled={undoingSale || selectedUndoSaleIds.length === 0}
+                                  className="rounded bg-emerald-500 px-2 py-1 text-xs font-medium text-neutral-950 transition hover:bg-emerald-400 disabled:opacity-50"
+                                >
+                                  Undo selected
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
+                    {isExpanded ? (
+                      <tr className="border-t border-neutral-900 bg-neutral-900/20">
+                        <td colSpan={9} className="px-3 py-3">
+                          <div className="rounded-lg border border-neutral-800 bg-neutral-950">
+                            <table className="w-full text-xs">
+                              <thead className="bg-neutral-950 text-neutral-500">
+                                <tr>
+                                  <th className="min-w-[8.5rem] px-3 py-2 text-left whitespace-nowrap">Bought</th>
+                                  <th className="min-w-[8.5rem] px-3 py-2 text-left whitespace-nowrap">Closed</th>
+                                  <th className="px-3 py-2 text-right">Shares</th>
+                                  <th className="px-3 py-2 text-right">Price</th>
+                                  <th className="px-3 py-2 text-right">Close Price</th>
+                                  <th className="px-3 py-2 text-right">Cash Flow</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {group.rows.map(({ position, sale }) => {
+                                  const cashFlow = closingCashFlowUSD(position, sale);
+                                  return (
+                                    <tr key={sale.id} className="border-t border-neutral-800">
+                                      <td className="min-w-[8.5rem] px-3 py-2 num text-neutral-400 whitespace-nowrap">
+                                        {position.purchaseDate}
+                                      </td>
+                                      <td className="min-w-[8.5rem] px-3 py-2 num text-neutral-400 whitespace-nowrap">
+                                        {sale.saleDate}
+                                      </td>
+                                      <td className="px-3 py-2 text-right num text-neutral-300">
+                                        {fmtShares(sale.shares)}
+                                      </td>
+                                      <td className="px-3 py-2 text-right num text-neutral-300">
+                                        {fmtPrice(position.purchasePriceUSD)}
+                                      </td>
+                                      <td className="px-3 py-2 text-right num text-neutral-300">
+                                        {sale.salePriceUSD === undefined ? '—' : fmtPrice(sale.salePriceUSD)}
+                                      </td>
+                                      <td className="px-3 py-2 text-right num text-neutral-100">
+                                        {cashFlow === 0 ? '—' : fmtUSDSigned(cashFlow)}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -506,7 +900,7 @@ function SoldPositionsDropdown({
   );
 }
 
-function PositionDropdown({ position, open }: { position: EnrichedPosition; open: boolean }) {
+function PositionDropdown({ position, open }: { position: ActivePositionRow; open: boolean }) {
   const today = todayISO();
   const [selectedWindow, setSelectedWindow] = useState<TimeWindowKey>('1W');
   const [dragStartDate, setDragStartDate] = useState<string | null>(null);
@@ -536,6 +930,8 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
   );
   const stroke =
     position.dayChangePct === 0 ? '#d4d4d4' : position.dayChangePct > 0 ? '#10b981' : '#f87171';
+  const showLots =
+    position.lots.length > 1 || position.lots.some((lot) => (lot.sales?.length ?? 0) > 0);
 
   const activeRange =
     dragStartDate && dragEndDate ? orderedSelection(dragStartDate, dragEndDate) : customRange;
@@ -723,6 +1119,49 @@ function PositionDropdown({ position, open }: { position: EnrichedPosition; open
                   ) : null}
                 </div>
               </div>
+              {showLots ? (
+                <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/70">
+                  <div className="flex items-center justify-between gap-3 px-3 py-2">
+                    <div className="text-xs font-medium text-neutral-300">Purchases</div>
+                    <div className="text-xs text-neutral-500">
+                      {position.lots.length} lot{position.lots.length === 1 ? '' : 's'} ·{' '}
+                      <span className="num">{fmtShares(Math.abs(position.shares))}</span> open shares
+                    </div>
+                  </div>
+                  <div className="overflow-auto border-t border-neutral-800">
+                    <table className="w-full text-xs">
+                      <thead className="text-neutral-500">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Bought</th>
+                          <th className="px-3 py-2 text-right">Shares</th>
+                          <th className="px-3 py-2 text-right">Cost Basis</th>
+                          <th className="px-3 py-2 text-right">Price</th>
+                          <th className="px-3 py-2 text-right">Market Value</th>
+                          <th className="px-3 py-2 text-right">Total G/L</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {position.lots.map((lot) => (
+                          <tr key={lot.id} className="border-t border-neutral-800">
+                            <td className="px-3 py-2 num text-neutral-400">{lot.purchaseDate}</td>
+                            <td className="px-3 py-2 text-right num text-neutral-300">{fmtShares(lot.shares)}</td>
+                            <td className="px-3 py-2 text-right num text-neutral-300">{fmtUSD(lot.costBasisUSD)}</td>
+                            <td className="px-3 py-2 text-right num text-neutral-300">
+                              {fmtPrice(lot.purchasePriceUSD)}
+                            </td>
+                            <td className="px-3 py-2 text-right num text-neutral-100">
+                              {lot.error ? '—' : fmtUSD(lot.marketValueUSD)}
+                            </td>
+                            <td className={`px-3 py-2 text-right num ${colorClass(lot.totalGainUSD)}`}>
+                              {lot.error ? '—' : fmtUSDSigned(lot.totalGainUSD)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -744,10 +1183,12 @@ export function PositionsTable({
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [expandedPositionId, setExpandedPositionId] = useState<string | null>(null);
   const [sellingPositionId, setSellingPositionId] = useState<string | null>(null);
+  const [removePopoverGroupKey, setRemovePopoverGroupKey] = useState<string | null>(null);
+  const [selectedRemovalLotIds, setSelectedRemovalLotIds] = useState<string[]>([]);
   const [soldOpen, setSoldOpen] = useState(false);
 
   const sorted = useMemo(() => {
-    const rows = enriched.filter((position) => Math.abs(position.shares) > SHARE_EPSILON);
+    const rows = groupActivePositions(enriched);
     rows.sort((a, b) => {
       const av = a[sortKey];
       const bv = b[sortKey];
@@ -773,6 +1214,7 @@ export function PositionsTable({
         .sort((a, b) => b.sale.saleDate.localeCompare(a.sale.saleDate)),
     [enriched],
   );
+  const soldGroups = useMemo(() => groupSoldRows(soldRows), [soldRows]);
 
   function onSort(key: SortKey) {
     if (key === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -782,13 +1224,88 @@ export function PositionsTable({
     }
   }
 
-  function toggleExpanded(positionId: string) {
-    setExpandedPositionId((current) => (current === positionId ? null : positionId));
+  function toggleExpanded(groupKey: string) {
+    setExpandedPositionId((current) => (current === groupKey ? null : groupKey));
   }
 
-  function openSellForm(positionId: string) {
-    setSellingPositionId(positionId);
+  function openSellForm(groupKey: string) {
+    setRemovePopoverGroupKey(null);
+    setSelectedRemovalLotIds([]);
+    setSellingPositionId(groupKey);
   }
+
+  async function submitSaleForRow(
+    row: ActivePositionRow,
+    sale: { saleDate: string; shares: number; salePriceUSD?: number },
+  ) {
+    const isShort = row.shares < 0;
+    const eligibleLots = row.lots
+      .filter(
+        (lot) =>
+          lot.purchaseDate <= sale.saleDate &&
+          (isShort ? lot.shares < -SHARE_EPSILON : lot.shares > SHARE_EPSILON),
+      )
+      .sort((a, b) => a.purchaseDate.localeCompare(b.purchaseDate) || a.createdAt.localeCompare(b.createdAt));
+    const availableShares = eligibleLots.reduce((sum, lot) => sum + Math.abs(lot.shares), 0);
+    if (sale.shares > availableShares + SHARE_EPSILON) {
+      throw new Error(`Only ${fmtShares(availableShares)} shares are available to close by that date.`);
+    }
+
+    let remainingShares = sale.shares;
+    for (const lot of eligibleLots) {
+      if (remainingShares <= SHARE_EPSILON) break;
+      const shares = Math.min(Math.abs(lot.shares), remainingShares);
+      await onSell(lot.id, { ...sale, shares });
+      remainingShares -= shares;
+    }
+  }
+
+  function closeRemovePopover() {
+    setRemovePopoverGroupKey(null);
+    setSelectedRemovalLotIds([]);
+  }
+
+  function toggleRemovePopover(row: ActivePositionRow) {
+    if (row.lots.length <= 1) {
+      void removeLots(row.lots);
+      return;
+    }
+
+    const opening = removePopoverGroupKey !== row.groupKey;
+    setRemovePopoverGroupKey(opening ? row.groupKey : null);
+    setSelectedRemovalLotIds(opening ? row.lots.map((lot) => lot.id) : []);
+  }
+
+  function toggleRemovalLot(lotId: string) {
+    setSelectedRemovalLotIds((current) =>
+      current.includes(lotId) ? current.filter((id) => id !== lotId) : [...current, lotId],
+    );
+  }
+
+  async function removeLots(lots: EnrichedPosition[]) {
+    for (const lot of lots) {
+      await remove(lot.id);
+    }
+    closeRemovePopover();
+  }
+
+  async function removeSelectedLots(row: ActivePositionRow) {
+    const selectedLots = row.lots.filter((lot) => selectedRemovalLotIds.includes(lot.id));
+    if (selectedLots.length === 0) return;
+    await removeLots(selectedLots);
+  }
+
+  useEffect(() => {
+    if (!removePopoverGroupKey) return;
+
+    function handleMouseDown(event: MouseEvent) {
+      if (event.target instanceof Element && event.target.closest('[data-remove-popover-root]')) return;
+      closeRemovePopover();
+    }
+
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [removePopoverGroupKey]);
 
   if (!loading && enriched.length === 0) {
     return (
@@ -806,7 +1323,7 @@ export function PositionsTable({
       <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-800">
         <h2 className="text-sm font-medium text-neutral-300">Positions</h2>
         <span className="text-xs text-neutral-500">
-          {sorted.length} active · {soldRows.length} closed
+          {sorted.length} active · {soldGroups.length} closed
         </span>
       </div>
       <div className="overflow-auto">
@@ -817,7 +1334,8 @@ export function PositionsTable({
                 <th
                   key={c.key}
                   onClick={() => onSort(c.key)}
-                  className={`px-3 py-2 cursor-pointer select-none hover:text-neutral-200 ${c.align === 'right' ? 'text-right' : 'text-left'
+                  className={`px-3 py-2 cursor-pointer select-none hover:text-neutral-200 ${c.key === 'purchaseDate' ? 'min-w-[8.5rem] whitespace-nowrap' : ''
+                    } ${c.align === 'right' ? 'text-right' : 'text-left'
                     }`}
                 >
                   <span className="inline-flex items-center gap-1">
@@ -833,12 +1351,12 @@ export function PositionsTable({
           </thead>
           <tbody>
             {sorted.map((p) => {
-              const isExpanded = expandedPositionId === p.id;
+              const isExpanded = expandedPositionId === p.groupKey;
               const isShort = p.shares < 0;
               return (
-                <Fragment key={p.id}>
+                <Fragment key={p.groupKey}>
                   <tr
-                    onClick={() => toggleExpanded(p.id)}
+                    onClick={() => toggleExpanded(p.groupKey)}
                     className="cursor-pointer border-t border-neutral-800 hover:bg-neutral-900/40"
                   >
                     <td className="px-3 py-2">
@@ -852,10 +1370,12 @@ export function PositionsTable({
                         <div className="text-[10px] leading-tight text-neutral-500">{p.exchange}</div>
                       ) : null}
                     </td>
-                    <td className="px-3 py-2 text-neutral-300 max-w-[22ch] truncate" title={p.name}>
+                    <td className="px-3 py-2 text-neutral-300 max-w-[18ch] truncate" title={p.name}>
                       {p.name}
                     </td>
-                    <td className="px-3 py-2 text-neutral-400 num">{p.purchaseDate}</td>
+                    <td className="px-3 py-2 text-neutral-400 num min-w-[8.5rem] whitespace-nowrap">
+                      <DateWithCountValue date={p.purchaseDateLabel} count={p.purchaseCount} label="purchases" />
+                    </td>
                     <td className="px-3 py-2 text-right num text-neutral-300">{fmtUSD(p.costBasisUSD)}</td>
                     <td className="px-3 py-2 text-right num text-neutral-300">{fmtShares(p.shares)}</td>
                     <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(p.purchasePriceUSD)}</td>
@@ -872,39 +1392,96 @@ export function PositionsTable({
                     <td className={`px-3 py-2 text-right num ${colorClass(p.totalGainPct)}`}>
                       {p.error ? '—' : fmtPct(p.totalGainPct)}
                     </td>
-                    <td className="px-3 py-2 text-right">
-                      <div className="inline-flex divide-x divide-neutral-800 rounded border border-neutral-800 overflow-hidden">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openSellForm(p.id);
-                          }}
-                          disabled={selling || removing || Math.abs(p.shares) <= SHARE_EPSILON}
-                          title={isShort ? 'Record cover' : 'Record sale'}
-                          className="px-2 py-1 text-xs text-neutral-500 transition hover:bg-neutral-800/60 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {isShort ? 'Cover' : 'Sell'}
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            remove(p.id);
-                          }}
-                          disabled={removing}
-                          title="Remove position"
-                          className="px-2 py-1 text-xs text-neutral-500 transition hover:bg-neutral-800/60 hover:text-red-400 disabled:opacity-40"
-                        >
-                          Remove
-                        </button>
+                    <td className="px-3 py-2 text-right" onClick={(event) => event.stopPropagation()}>
+                      <div className="relative inline-block text-left" data-remove-popover-root>
+                        <div className="inline-flex divide-x divide-neutral-800 overflow-hidden rounded border border-neutral-800">
+                          <button
+                            type="button"
+                            onClick={() => openSellForm(p.groupKey)}
+                            disabled={selling || removing || Math.abs(p.shares) <= SHARE_EPSILON}
+                            title={isShort ? 'Record cover' : 'Record sale'}
+                            className="px-2 py-1 text-xs text-neutral-500 transition hover:bg-neutral-800/60 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {isShort ? 'Cover' : 'Sell'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleRemovePopover(p)}
+                            disabled={removing}
+                            title={p.lots.length > 1 ? 'Choose positions to remove' : 'Remove position'}
+                            className="px-2 py-1 text-xs text-neutral-500 transition hover:bg-neutral-800/60 hover:text-red-400 disabled:opacity-40"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        {removePopoverGroupKey === p.groupKey ? (
+                          <div className="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
+                            <div className="mb-2 flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-xs font-medium text-neutral-300">Remove positions</div>
+                                <div className="text-[11px] text-neutral-500">Choose which {p.symbol} buys to remove.</div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={closeRemovePopover}
+                                className="rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+                              >
+                                x
+                              </button>
+                            </div>
+                            <div className="max-h-48 overflow-auto rounded border border-neutral-800">
+                              {p.lots.map((lot) => (
+                                <label
+                                  key={lot.id}
+                                  className="flex cursor-pointer items-center gap-2 border-t border-neutral-800 px-2 py-2 first:border-t-0 hover:bg-neutral-900/60"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedRemovalLotIds.includes(lot.id)}
+                                    disabled={removing}
+                                    onChange={() => toggleRemovalLot(lot.id)}
+                                    className="h-3.5 w-3.5 accent-red-500"
+                                  />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-xs text-neutral-300">{lot.purchaseDate}</span>
+                                    <span className="block text-[11px] text-neutral-500">
+                                      <span className="num">{fmtShares(lot.shares)}</span> shares
+                                    </span>
+                                  </span>
+                                  <span className="num text-xs text-neutral-400">{fmtUSD(lot.costBasisUSD)}</span>
+                                </label>
+                              ))}
+                            </div>
+                            <div className="mt-3 flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void removeLots(p.lots)}
+                                disabled={removing}
+                                className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-400 transition hover:border-red-500/50 hover:text-red-300 disabled:opacity-50"
+                              >
+                                Remove all
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void removeSelectedLots(p)}
+                                disabled={removing || selectedRemovalLotIds.length === 0}
+                                className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-neutral-950 transition hover:bg-red-400 disabled:opacity-50"
+                              >
+                                Remove selected
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
-                  {sellingPositionId === p.id ? (
+                  {sellingPositionId === p.groupKey ? (
                     <SellFormRow
                       position={p}
+                      defaultShares={Math.abs(p.lots[0]?.shares ?? p.shares)}
                       selling={selling}
                       onCancel={() => setSellingPositionId(null)}
-                      onSubmit={(sale) => onSell(p.id, sale)}
+                      onSubmit={(sale) => submitSaleForRow(p, sale)}
                     />
                   ) : null}
                   <PositionDropdown position={p} open={isExpanded} />

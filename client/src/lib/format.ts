@@ -18,11 +18,6 @@ const PCT_NOSIGN = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 
-const NUM4 = new Intl.NumberFormat('en-US', {
-  minimumFractionDigits: 4,
-  maximumFractionDigits: 4,
-});
-
 const NUM2 = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
@@ -46,7 +41,7 @@ export function fmtPct(n: number | undefined | null, signed = true): string {
 
 export function fmtShares(n: number | undefined | null): string {
   if (n === undefined || n === null || !Number.isFinite(n)) return '—';
-  return NUM4.format(n);
+  return NUM2.format(n);
 }
 
 export function fmtPrice(n: number | undefined | null): string {

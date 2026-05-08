@@ -14,16 +14,34 @@ interface Props {
   cashUSD?: number;
 }
 
+interface AllocationDatum {
+  name: string;
+  value: number;
+  pct: number;
+}
+
+function allocationName(position: EnrichedPosition): string {
+  const symbol = position.symbol.trim().toUpperCase();
+  return position.shares < 0 ? `${symbol} short` : symbol;
+}
+
 export function AllocationChart({ enriched, cashUSD = 0 }: Props) {
   const data = useMemo(() => {
     const valid = enriched.filter((p) => !p.error && Math.abs(p.marketValueUSD) > 0);
     const total = valid.reduce((s, p) => s + Math.abs(p.marketValueUSD), 0) + cashUSD;
-    const holdings = valid
-      .map((p) => ({
-        name: p.shares < 0 ? `${p.symbol} short` : p.symbol,
-        value: Math.abs(p.marketValueUSD),
-        pct: total > 0 ? Math.abs(p.marketValueUSD) / total : 0,
-      }));
+    const holdingsByName = valid.reduce<Map<string, Omit<AllocationDatum, 'pct'>>>((groups, position) => {
+      const name = allocationName(position);
+      const existing = groups.get(name);
+      groups.set(name, {
+        name,
+        value: (existing?.value ?? 0) + Math.abs(position.marketValueUSD),
+      });
+      return groups;
+    }, new Map());
+    const holdings = [...holdingsByName.values()].map((holding) => ({
+      ...holding,
+      pct: total > 0 ? holding.value / total : 0,
+    }));
     const rows =
       cashUSD > 0
         ? [...holdings, { name: 'Cash', value: cashUSD, pct: total > 0 ? cashUSD / total : 0 }]

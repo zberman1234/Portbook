@@ -7,7 +7,7 @@ import { PerformanceChart } from './components/PerformanceChart';
 import { PortfolioTabs } from './components/PortfolioTabs';
 import { usePortfolio } from './hooks/usePortfolio';
 import { useEnrichedPositions } from './hooks/usePrices';
-import { applySalesToEnrichedPositions, cashFromSales, originalCostBasisUSD } from './lib/positions';
+import { applySalesToEnrichedPositions, portfolioFunding } from './lib/positions';
 
 export default function App() {
   const qc = useQueryClient();
@@ -31,8 +31,7 @@ export default function App() {
   } = usePortfolio();
   const { enriched: savedEnriched, isLoading: pricesLoading, isFetching: pricesFetching } = useEnrichedPositions(positions);
   const enriched = applySalesToEnrichedPositions(savedEnriched);
-  const cashUSD = cashFromSales(savedEnriched);
-  const totalCostBasisUSD = originalCostBasisUSD(savedEnriched);
+  const { cashUSD, totalCostBasisUSD } = portfolioFunding(savedEnriched);
 
   const handleRefresh = () => {
     qc.invalidateQueries({ queryKey: ['portfolios'] });

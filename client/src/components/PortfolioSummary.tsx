@@ -27,7 +27,7 @@ export function PortfolioSummary({ enriched, loading, cashUSD = 0, totalCostBasi
     {
       label: 'Net cost basis',
       value: fmtUSD(cost),
-      hint: 'signed opening cost',
+      hint: 'cash-adjusted cost',
       color: 'text-neutral-300',
     },
     {

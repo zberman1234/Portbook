@@ -4,8 +4,8 @@ import { Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YA
 import { usePortfolio } from '../hooks/usePortfolio';
 import { api } from '../lib/api';
 import { colorClass, fmtPct, fmtPrice, fmtShares, fmtUSD, fmtUSDSigned } from '../lib/format';
-import { closingCashFlowUSD, SHARE_EPSILON } from '../lib/positions';
-import type { EnrichedPosition, HistoryRow, PositionSale } from '../types';
+import { closingCashFlowUSD, SHARE_EPSILON, totalSoldShares } from '../lib/positions';
+import type { EnrichedPosition, HistoryRow, Position, PositionSale } from '../types';
 
 type SortKey =
   | 'symbol'
@@ -437,6 +437,13 @@ type SoldGroup = {
   cashFlowUSD: number;
 };
 
+type HiddenPositionRow = {
+  position: Position;
+  soldShares: number;
+  openShares: number | null;
+  closed: boolean;
+};
+
 function groupKeyForSymbol(symbol: string): string {
   return symbol.trim().toUpperCase();
 }
@@ -600,17 +607,50 @@ function groupSoldRows(rows: SoldRow[]): SoldGroup[] {
     .sort((a, b) => b.rows[0].sale.saleDate.localeCompare(a.rows[0].sale.saleDate));
 }
 
+function hiddenPositionsFromPortfolio(positions: Position[]): HiddenPositionRow[] {
+  return positions
+    .filter((position) => position.hidden)
+    .map((position) => {
+      const soldShares = totalSoldShares(position);
+      if (typeof position.shares === 'number' && Number.isFinite(position.shares)) {
+        const openSharesAbs = Math.max(0, Math.abs(position.shares) - soldShares);
+        const openShares = Math.sign(position.shares) * openSharesAbs;
+        return {
+          position,
+          soldShares,
+          openShares,
+          closed: Math.abs(openShares) <= SHARE_EPSILON,
+        };
+      }
+      return {
+        position,
+        soldShares,
+        openShares: null,
+        closed: false,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.position.purchaseDate.localeCompare(a.position.purchaseDate) ||
+        b.position.createdAt.localeCompare(a.position.createdAt),
+    );
+}
+
 function SoldPositionsDropdown({
   rows,
   open,
+  hidingPosition,
   undoingSale,
   onToggle,
+  onHidePositions,
   onUndoSale,
 }: {
   rows: SoldRow[];
   open: boolean;
+  hidingPosition: boolean;
   undoingSale: boolean;
   onToggle: () => void;
+  onHidePositions: (positionIds: string[]) => Promise<unknown>;
   onUndoSale: (positionId: string, saleId: string) => Promise<unknown>;
 }) {
   const [expandedGroupKey, setExpandedGroupKey] = useState<string | null>(null);
@@ -715,6 +755,9 @@ function SoldPositionsDropdown({
                   const isPopoverOpen = undoPopoverGroupKey === group.groupKey;
                   const hasMultiple = group.rows.length > 1;
                   const isExpanded = hasMultiple && expandedGroupKey === group.groupKey;
+                  const uniquePositionIds = Array.from(
+                    new Set(group.rows.map((row) => row.position.id)),
+                  );
                   return (
                     <Fragment key={group.groupKey}>
                     <tr
@@ -735,7 +778,7 @@ function SoldPositionsDropdown({
                           {group.rows.length} close{group.rows.length === 1 ? '' : 's'}
                         </div>
                       </td>
-                      <td className="max-w-[18ch] truncate px-3 py-2 text-neutral-300" title={group.name}>
+                      <td className="max-w-[15ch] truncate px-3 py-2 text-neutral-300" title={group.name}>
                         {group.name}
                       </td>
                       <td className="min-w-[8.5rem] px-3 py-2 num text-neutral-400 whitespace-nowrap">
@@ -757,7 +800,19 @@ function SoldPositionsDropdown({
                         {group.cashFlowUSD === 0 ? '—' : fmtUSDSigned(group.cashFlowUSD)}
                       </td>
                       <td className="px-3 py-2 text-right" onClick={(event) => event.stopPropagation()}>
-                        <div className="relative inline-block text-left" data-undo-popover-root>
+                        <div className="relative inline-flex items-center gap-1 text-left" data-undo-popover-root>
+                          <button
+                            type="button"
+                            disabled={hidingPosition}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void onHidePositions(uniquePositionIds);
+                            }}
+                            className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-amber-500/40 hover:text-amber-300 disabled:opacity-50"
+                            title={hasMultiple ? 'Hide closes in this row' : 'Hide close'}
+                          >
+                            {hidingPosition ? 'Hiding…' : 'Hide'}
+                          </button>
                           <button
                             type="button"
                             disabled={undoingSale}
@@ -891,6 +946,114 @@ function SoldPositionsDropdown({
                     </Fragment>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HiddenPositionsDropdown({
+  rows,
+  open,
+  hidingPosition,
+  onToggle,
+  onUnhide,
+  onUnhideAll,
+}: {
+  rows: HiddenPositionRow[];
+  open: boolean;
+  hidingPosition: boolean;
+  onToggle: () => void;
+  onUnhide: (positionId: string) => Promise<unknown>;
+  onUnhideAll: () => Promise<unknown>;
+}) {
+  if (rows.length === 0) return null;
+  const openCount = rows.filter((row) => !row.closed).length;
+  const closedCount = rows.length - openCount;
+  return (
+    <div className="border-t border-neutral-800">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between px-5 py-3 text-left transition hover:bg-neutral-900/50"
+      >
+        <div>
+          <div className="text-sm font-medium text-neutral-400">Hidden</div>
+          <div className="text-xs text-neutral-600">
+            {rows.length} position{rows.length === 1 ? '' : 's'} hidden · {openCount} open · {closedCount} closed
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {rows.length > 1 ? (
+            <button
+              type="button"
+              disabled={hidingPosition}
+              onClick={(e) => { e.stopPropagation(); void onUnhideAll(); }}
+              className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
+            >
+              {hidingPosition ? 'Saving…' : 'Unhide all'}
+            </button>
+          ) : null}
+          <span className={`text-sm text-neutral-500 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}>▶</span>
+        </div>
+      </button>
+      <div
+        className="grid transition-[grid-template-rows,opacity] duration-200 ease-out"
+        style={{ gridTemplateRows: open ? '1fr' : '0fr', opacity: open ? 1 : 0 }}
+      >
+        <div className="overflow-hidden">
+          <div className="overflow-auto border-t border-neutral-800" style={{ maxHeight: 'min(40vh, 360px)' }}>
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10 bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
+                <tr>
+                  <th className="px-3 py-2 text-left">Symbol</th>
+                  <th className="px-3 py-2 text-left">Name</th>
+                  <th className="min-w-[8.5rem] px-3 py-2 text-left whitespace-nowrap">Bought</th>
+                  <th className="px-3 py-2 text-right">Open</th>
+                  <th className="px-3 py-2 text-right">Closed</th>
+                  <th className="px-3 py-2 text-right">Status</th>
+                  <th className="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.position.id} className="border-t border-neutral-800 hover:bg-neutral-900/40">
+                    <td className="px-3 py-2">
+                      <div className="font-mono text-amber-300">{row.position.symbol}</div>
+                      {row.position.exchange ? (
+                        <div className="text-[10px] leading-tight text-neutral-500">{row.position.exchange}</div>
+                      ) : null}
+                    </td>
+                    <td className="max-w-[15ch] truncate px-3 py-2 text-neutral-300" title={row.position.name}>
+                      {row.position.name}
+                    </td>
+                    <td className="min-w-[8.5rem] px-3 py-2 num text-neutral-400 whitespace-nowrap">
+                      {row.position.purchaseDate}
+                    </td>
+                    <td className="px-3 py-2 text-right num text-neutral-300">
+                      {row.openShares === null ? '—' : fmtShares(row.openShares)}
+                    </td>
+                    <td className="px-3 py-2 text-right num text-neutral-300">
+                      {row.soldShares > SHARE_EPSILON ? fmtShares(row.soldShares) : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right text-xs text-neutral-400">
+                      {row.closed ? 'Closed' : 'Open'}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        disabled={hidingPosition}
+                        onClick={() => void onUnhide(row.position.id)}
+                        className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
+                      >
+                        {hidingPosition ? 'Saving…' : 'Unhide'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -1178,14 +1341,17 @@ export function PositionsTable({
   onUndoSale,
   undoingSale,
 }: Props) {
-  const { remove, removing } = usePortfolio();
+  const { positions, remove, removing, setPositionHidden, hidingPosition } = usePortfolio();
   const [sortKey, setSortKey] = useState<SortKey>('marketValueUSD');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [expandedPositionId, setExpandedPositionId] = useState<string | null>(null);
   const [sellingPositionId, setSellingPositionId] = useState<string | null>(null);
+  const [hidePopoverGroupKey, setHidePopoverGroupKey] = useState<string | null>(null);
+  const [selectedHiddenLotIds, setSelectedHiddenLotIds] = useState<string[]>([]);
   const [removePopoverGroupKey, setRemovePopoverGroupKey] = useState<string | null>(null);
   const [selectedRemovalLotIds, setSelectedRemovalLotIds] = useState<string[]>([]);
   const [soldOpen, setSoldOpen] = useState(false);
+  const [hiddenOpen, setHiddenOpen] = useState(false);
 
   const sorted = useMemo(() => {
     const rows = groupActivePositions(enriched);
@@ -1215,6 +1381,7 @@ export function PositionsTable({
     [enriched],
   );
   const soldGroups = useMemo(() => groupSoldRows(soldRows), [soldRows]);
+  const hiddenRows = useMemo(() => hiddenPositionsFromPortfolio(positions), [positions]);
 
   function onSort(key: SortKey) {
     if (key === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -1229,6 +1396,7 @@ export function PositionsTable({
   }
 
   function openSellForm(groupKey: string) {
+    closeHidePopover();
     setRemovePopoverGroupKey(null);
     setSelectedRemovalLotIds([]);
     setSellingPositionId(groupKey);
@@ -1260,12 +1428,57 @@ export function PositionsTable({
     }
   }
 
+  function closeHidePopover() {
+    setHidePopoverGroupKey(null);
+    setSelectedHiddenLotIds([]);
+  }
+
+  async function setHiddenForPositionIds(positionIds: string[], hidden: boolean) {
+    const uniqueIds = Array.from(new Set(positionIds));
+    for (const positionId of uniqueIds) {
+      await setPositionHidden({ positionId, hidden });
+    }
+  }
+
+  async function hideLots(lots: EnrichedPosition[]) {
+    await setHiddenForPositionIds(
+      lots.map((lot) => lot.id),
+      true,
+    );
+    closeHidePopover();
+  }
+
+  function toggleHidePopover(row: ActivePositionRow) {
+    closeRemovePopover();
+    if (row.lots.length <= 1) {
+      void hideLots(row.lots);
+      return;
+    }
+
+    const opening = hidePopoverGroupKey !== row.groupKey;
+    setHidePopoverGroupKey(opening ? row.groupKey : null);
+    setSelectedHiddenLotIds(opening ? row.lots.map((lot) => lot.id) : []);
+  }
+
+  function toggleHiddenLot(lotId: string) {
+    setSelectedHiddenLotIds((current) =>
+      current.includes(lotId) ? current.filter((id) => id !== lotId) : [...current, lotId],
+    );
+  }
+
+  async function hideSelectedLots(row: ActivePositionRow) {
+    const selectedLots = row.lots.filter((lot) => selectedHiddenLotIds.includes(lot.id));
+    if (selectedLots.length === 0) return;
+    await hideLots(selectedLots);
+  }
+
   function closeRemovePopover() {
     setRemovePopoverGroupKey(null);
     setSelectedRemovalLotIds([]);
   }
 
   function toggleRemovePopover(row: ActivePositionRow) {
+    closeHidePopover();
     if (row.lots.length <= 1) {
       void removeLots(row.lots);
       return;
@@ -1296,6 +1509,18 @@ export function PositionsTable({
   }
 
   useEffect(() => {
+    if (!hidePopoverGroupKey) return;
+
+    function handleMouseDown(event: MouseEvent) {
+      if (event.target instanceof Element && event.target.closest('[data-hide-popover-root]')) return;
+      closeHidePopover();
+    }
+
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [hidePopoverGroupKey]);
+
+  useEffect(() => {
     if (!removePopoverGroupKey) return;
 
     function handleMouseDown(event: MouseEvent) {
@@ -1307,7 +1532,7 @@ export function PositionsTable({
     return () => document.removeEventListener('mousedown', handleMouseDown);
   }, [removePopoverGroupKey]);
 
-  if (!loading && enriched.length === 0) {
+  if (!loading && enriched.length === 0 && hiddenRows.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-neutral-800 bg-neutral-950/40 p-12 text-center">
         <div className="text-neutral-300 font-medium mb-1">No positions yet</div>
@@ -1323,7 +1548,7 @@ export function PositionsTable({
       <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-800">
         <h2 className="text-sm font-medium text-neutral-300">Positions</h2>
         <span className="text-xs text-neutral-500">
-          {sorted.length} active · {soldGroups.length} closed
+          {sorted.length} active · {soldGroups.length} closed · {hiddenRows.length} hidden
         </span>
       </div>
       <div className="overflow-auto">
@@ -1370,7 +1595,7 @@ export function PositionsTable({
                         <div className="text-[10px] leading-tight text-neutral-500">{p.exchange}</div>
                       ) : null}
                     </td>
-                    <td className="px-3 py-2 text-neutral-300 max-w-[18ch] truncate" title={p.name}>
+                    <td className="px-3 py-2 text-neutral-300 max-w-[15ch] truncate" title={p.name}>
                       {p.name}
                     </td>
                     <td className="px-3 py-2 text-neutral-400 num min-w-[8.5rem] whitespace-nowrap">
@@ -1393,85 +1618,154 @@ export function PositionsTable({
                       {p.error ? '—' : fmtPct(p.totalGainPct)}
                     </td>
                     <td className="px-3 py-2 text-right" onClick={(event) => event.stopPropagation()}>
-                      <div className="relative inline-block text-left" data-remove-popover-root>
-                        <div className="inline-flex divide-x divide-neutral-800 overflow-hidden rounded border border-neutral-800">
+                      <div className="inline-flex items-center gap-1 text-left">
+                        <button
+                          type="button"
+                          onClick={() => openSellForm(p.groupKey)}
+                          disabled={selling || removing || Math.abs(p.shares) <= SHARE_EPSILON}
+                          title={isShort ? 'Record cover' : 'Record sale'}
+                          className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {isShort ? 'Cover' : 'Sell'}
+                        </button>
+                        <div className="relative inline-block" data-hide-popover-root>
                           <button
                             type="button"
-                            onClick={() => openSellForm(p.groupKey)}
-                            disabled={selling || removing || Math.abs(p.shares) <= SHARE_EPSILON}
-                            title={isShort ? 'Record cover' : 'Record sale'}
-                            className="px-2 py-1 text-xs text-neutral-500 transition hover:bg-neutral-800/60 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                            onClick={() => toggleHidePopover(p)}
+                            disabled={hidingPosition}
+                            title={p.lots.length > 1 ? 'Choose positions to hide' : 'Hide position'}
+                            className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-amber-500/40 hover:text-amber-300 disabled:opacity-40"
                           >
-                            {isShort ? 'Cover' : 'Sell'}
+                            {hidingPosition ? 'Hiding…' : 'Hide'}
                           </button>
+                          {hidePopoverGroupKey === p.groupKey ? (
+                            <div className="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
+                              <div className="mb-2 flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-xs font-medium text-neutral-300">Hide positions</div>
+                                  <div className="text-[11px] text-neutral-500">Choose which {p.symbol} buys to hide.</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={closeHidePopover}
+                                  className="rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+                                >
+                                  x
+                                </button>
+                              </div>
+                              <div className="max-h-48 overflow-auto rounded border border-neutral-800">
+                                {p.lots.map((lot) => (
+                                  <label
+                                    key={lot.id}
+                                    className="flex cursor-pointer items-center gap-2 border-t border-neutral-800 px-2 py-2 first:border-t-0 hover:bg-neutral-900/60"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedHiddenLotIds.includes(lot.id)}
+                                      disabled={hidingPosition}
+                                      onChange={() => toggleHiddenLot(lot.id)}
+                                      className="h-3.5 w-3.5 accent-amber-500"
+                                    />
+                                    <span className="min-w-0 flex-1">
+                                      <span className="block truncate text-xs text-neutral-300">{lot.purchaseDate}</span>
+                                      <span className="block text-[11px] text-neutral-500">
+                                        <span className="num">{fmtShares(lot.shares)}</span> shares
+                                      </span>
+                                    </span>
+                                    <span className="num text-xs text-neutral-400">{fmtUSD(lot.costBasisUSD)}</span>
+                                  </label>
+                                ))}
+                              </div>
+                              <div className="mt-3 flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void hideLots(p.lots)}
+                                  disabled={hidingPosition}
+                                  className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-400 transition hover:border-amber-500/50 hover:text-amber-300 disabled:opacity-50"
+                                >
+                                  Hide all
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void hideSelectedLots(p)}
+                                  disabled={hidingPosition || selectedHiddenLotIds.length === 0}
+                                  className="rounded bg-amber-500 px-2 py-1 text-xs font-medium text-neutral-950 transition hover:bg-amber-400 disabled:opacity-50"
+                                >
+                                  Hide selected
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="relative inline-block" data-remove-popover-root>
                           <button
                             type="button"
                             onClick={() => toggleRemovePopover(p)}
                             disabled={removing}
                             title={p.lots.length > 1 ? 'Choose positions to remove' : 'Remove position'}
-                            className="px-2 py-1 text-xs text-neutral-500 transition hover:bg-neutral-800/60 hover:text-red-400 disabled:opacity-40"
+                            className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-red-500/50 hover:text-red-400 disabled:opacity-40"
                           >
                             Remove
                           </button>
-                        </div>
-                        {removePopoverGroupKey === p.groupKey ? (
-                          <div className="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
-                            <div className="mb-2 flex items-start justify-between gap-3">
-                              <div>
-                                <div className="text-xs font-medium text-neutral-300">Remove positions</div>
-                                <div className="text-[11px] text-neutral-500">Choose which {p.symbol} buys to remove.</div>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={closeRemovePopover}
-                                className="rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
-                              >
-                                x
-                              </button>
-                            </div>
-                            <div className="max-h-48 overflow-auto rounded border border-neutral-800">
-                              {p.lots.map((lot) => (
-                                <label
-                                  key={lot.id}
-                                  className="flex cursor-pointer items-center gap-2 border-t border-neutral-800 px-2 py-2 first:border-t-0 hover:bg-neutral-900/60"
+                          {removePopoverGroupKey === p.groupKey ? (
+                            <div className="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
+                              <div className="mb-2 flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-xs font-medium text-neutral-300">Remove positions</div>
+                                  <div className="text-[11px] text-neutral-500">Choose which {p.symbol} buys to remove.</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={closeRemovePopover}
+                                  className="rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
                                 >
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedRemovalLotIds.includes(lot.id)}
-                                    disabled={removing}
-                                    onChange={() => toggleRemovalLot(lot.id)}
-                                    className="h-3.5 w-3.5 accent-red-500"
-                                  />
-                                  <span className="min-w-0 flex-1">
-                                    <span className="block truncate text-xs text-neutral-300">{lot.purchaseDate}</span>
-                                    <span className="block text-[11px] text-neutral-500">
-                                      <span className="num">{fmtShares(lot.shares)}</span> shares
+                                  x
+                                </button>
+                              </div>
+                              <div className="max-h-48 overflow-auto rounded border border-neutral-800">
+                                {p.lots.map((lot) => (
+                                  <label
+                                    key={lot.id}
+                                    className="flex cursor-pointer items-center gap-2 border-t border-neutral-800 px-2 py-2 first:border-t-0 hover:bg-neutral-900/60"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedRemovalLotIds.includes(lot.id)}
+                                      disabled={removing}
+                                      onChange={() => toggleRemovalLot(lot.id)}
+                                      className="h-3.5 w-3.5 accent-red-500"
+                                    />
+                                    <span className="min-w-0 flex-1">
+                                      <span className="block truncate text-xs text-neutral-300">{lot.purchaseDate}</span>
+                                      <span className="block text-[11px] text-neutral-500">
+                                        <span className="num">{fmtShares(lot.shares)}</span> shares
+                                      </span>
                                     </span>
-                                  </span>
-                                  <span className="num text-xs text-neutral-400">{fmtUSD(lot.costBasisUSD)}</span>
-                                </label>
-                              ))}
+                                    <span className="num text-xs text-neutral-400">{fmtUSD(lot.costBasisUSD)}</span>
+                                  </label>
+                                ))}
+                              </div>
+                              <div className="mt-3 flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void removeLots(p.lots)}
+                                  disabled={removing}
+                                  className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-400 transition hover:border-red-500/50 hover:text-red-300 disabled:opacity-50"
+                                >
+                                  Remove all
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void removeSelectedLots(p)}
+                                  disabled={removing || selectedRemovalLotIds.length === 0}
+                                  className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-neutral-950 transition hover:bg-red-400 disabled:opacity-50"
+                                >
+                                  Remove selected
+                                </button>
+                              </div>
                             </div>
-                            <div className="mt-3 flex items-center justify-end gap-2">
-                              <button
-                                type="button"
-                                onClick={() => void removeLots(p.lots)}
-                                disabled={removing}
-                                className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-400 transition hover:border-red-500/50 hover:text-red-300 disabled:opacity-50"
-                              >
-                                Remove all
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void removeSelectedLots(p)}
-                                disabled={removing || selectedRemovalLotIds.length === 0}
-                                className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-neutral-950 transition hover:bg-red-400 disabled:opacity-50"
-                              >
-                                Remove selected
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
+                          ) : null}
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -1512,9 +1806,19 @@ export function PositionsTable({
         <SoldPositionsDropdown
           rows={soldRows}
           open={soldOpen}
+          hidingPosition={hidingPosition}
           undoingSale={undoingSale}
           onToggle={() => setSoldOpen((open) => !open)}
+          onHidePositions={(positionIds) => setHiddenForPositionIds(positionIds, true)}
           onUndoSale={onUndoSale}
+        />
+        <HiddenPositionsDropdown
+          rows={hiddenRows}
+          open={hiddenOpen}
+          hidingPosition={hidingPosition}
+          onToggle={() => setHiddenOpen((open) => !open)}
+          onUnhide={(positionId) => setHiddenForPositionIds([positionId], false)}
+          onUnhideAll={() => setHiddenForPositionIds(hiddenRows.map((r) => r.position.id), false)}
         />
       </div>
     </div>

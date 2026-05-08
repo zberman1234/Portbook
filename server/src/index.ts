@@ -17,6 +17,7 @@ import {
   renamePortfolio,
   addPositionToPortfolio,
   removePositionFromPortfolio,
+  setPositionHiddenInPortfolio,
   addSaleToPosition,
   removeSaleFromPosition,
   type Portfolio,
@@ -324,6 +325,7 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
       exchange: exchange ?? '',
       currency: resolvedCurrency,
       purchaseDate,
+      hidden: false,
       ...buyFields,
       ...(purchasePriceUSD !== undefined ? { purchasePriceUSD } : {}),
       createdAt: new Date().toISOString(),
@@ -428,6 +430,32 @@ app.post('/api/portfolios/:portfolioId/positions/:positionId/sales', async (req,
       }
       if ((err as NodeJS.ErrnoException).code === 'ERANGE') {
         res.status(400).json({ error: 'sale exceeds open shares' });
+        return;
+      }
+      throw err;
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch('/api/portfolios/:portfolioId/positions/:positionId', async (req, res, next) => {
+  try {
+    const { hidden } = req.body as { hidden?: unknown };
+    if (typeof hidden !== 'boolean') {
+      res.status(400).json({ error: 'hidden must be boolean' });
+      return;
+    }
+    try {
+      const updated = await setPositionHiddenInPortfolio(
+        req.params.portfolioId,
+        req.params.positionId,
+        hidden,
+      );
+      res.json(updated);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: 'portfolio or position not found' });
         return;
       }
       throw err;

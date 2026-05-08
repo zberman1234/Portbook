@@ -124,6 +124,18 @@ export function usePortfolio() {
     },
   });
 
+  const hiddenMutation = useMutation({
+    mutationFn: ({ positionId, hidden }: { positionId: string; hidden: boolean }) => {
+      if (!activePortfolioIdState) {
+        return Promise.reject(new Error('no active portfolio'));
+      }
+      return api.setPositionHidden(activePortfolioIdState, positionId, hidden);
+    },
+    onSuccess: (data) => {
+      qc.setQueryData(['portfolios'], data.portfolios);
+    },
+  });
+
   const addSaleMutation = useMutation({
     mutationFn: ({
       positionId,
@@ -193,6 +205,8 @@ export function usePortfolio() {
     adding: addMutation.isPending,
     remove: removeMutation.mutateAsync,
     removing: removeMutation.isPending,
+    setPositionHidden: hiddenMutation.mutateAsync,
+    hidingPosition: hiddenMutation.isPending,
     addSale: addSaleMutation.mutateAsync,
     selling: addSaleMutation.isPending,
     removeSale: removeSaleMutation.mutateAsync,

@@ -24,6 +24,7 @@ export interface Position {
   exchange: string;
   currency: string;
   purchaseDate: string; // YYYY-MM-DD
+  hidden?: boolean;
   costBasisUSD?: number;
   shares?: number;
   purchasePriceUSD?: number;
@@ -163,6 +164,39 @@ export async function removePositionFromPortfolio(
   }
   await savePortfolios(updated);
   return updated;
+}
+
+export async function setPositionHiddenInPortfolio(
+  portfolioId: string,
+  positionId: string,
+  hidden: boolean,
+): Promise<{ position: Position; portfolios: Portfolio[] }> {
+  const current = await loadPortfolios();
+  let foundPortfolio = false;
+  let foundPosition = false;
+  let updatedPosition: Position | null = null;
+  const updated = current.map((portfolio) => {
+    if (portfolio.id !== portfolioId) return portfolio;
+    foundPortfolio = true;
+    return {
+      ...portfolio,
+      positions: portfolio.positions.map((position) => {
+        if (position.id !== positionId) return position;
+        foundPosition = true;
+        updatedPosition = { ...position, hidden };
+        return updatedPosition;
+      }),
+    };
+  });
+  if (!foundPortfolio || !foundPosition || !updatedPosition) {
+    const err = new Error(
+      !foundPortfolio ? `portfolio not found: ${portfolioId}` : `position not found: ${positionId}`,
+    );
+    (err as NodeJS.ErrnoException).code = 'ENOENT';
+    throw err;
+  }
+  await savePortfolios(updated);
+  return { position: updatedPosition, portfolios: updated };
 }
 
 export async function addSaleToPosition(

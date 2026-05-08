@@ -13,6 +13,7 @@ export interface Position {
   exchange: string;
   currency: string;
   purchaseDate: string; // YYYY-MM-DD
+  hidden?: boolean;
   costBasisUSD?: number;
   shares?: number;
   purchasePriceUSD?: number;

@@ -29,7 +29,12 @@ export default function App() {
     removeSale,
     undoingSale,
   } = usePortfolio();
-  const { enriched: savedEnriched, isLoading: pricesLoading, isFetching: pricesFetching } = useEnrichedPositions(positions);
+  const visiblePositions = positions.filter((position) => !position.hidden);
+  const {
+    enriched: savedEnriched,
+    isLoading: pricesLoading,
+    isFetching: pricesFetching,
+  } = useEnrichedPositions(visiblePositions);
   const enriched = applySalesToEnrichedPositions(savedEnriched);
   const { cashUSD, totalCostBasisUSD } = portfolioFunding(savedEnriched);
 
@@ -94,12 +99,12 @@ export default function App() {
           totalCostBasisUSD={totalCostBasisUSD}
         />
 
-        {positions.length > 0 ? (
+        {visiblePositions.length > 0 ? (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
             <div className="lg:h-[30.25rem] lg:min-h-0">
               <AllocationChart enriched={enriched} cashUSD={cashUSD} />
             </div>
-            <PerformanceChart positions={positions} />
+            <PerformanceChart positions={visiblePositions} />
           </div>
         ) : null}
 

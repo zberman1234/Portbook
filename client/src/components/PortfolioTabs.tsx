@@ -6,6 +6,7 @@ function activePositionCount(portfolio: Portfolio): number {
   const symbols = new Set<string>();
 
   for (const position of portfolio.positions) {
+    if (position.hidden) continue;
     if (typeof position.shares === 'number' && Number.isFinite(position.shares)) {
       const openShares = remainingShares({ shares: position.shares, sales: position.sales });
       if (Math.abs(openShares) <= SHARE_EPSILON) continue;

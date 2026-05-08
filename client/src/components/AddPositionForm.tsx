@@ -22,7 +22,8 @@ type TradeAction = 'buy' | 'sell';
 
 export function AddPositionForm() {
   const { add, adding, positions, addSale, selling } = usePortfolio();
-  const { enriched: savedEnriched } = useEnrichedPositions(positions);
+  const visiblePositions = positions.filter((position) => !position.hidden);
+  const { enriched: savedEnriched } = useEnrichedPositions(visiblePositions);
   const enriched = applySalesToEnrichedPositions(savedEnriched);
   const [mode, setMode] = useState<Mode>('single');
   const [buyMode, setBuyMode] = useState<BuyMode>('amount');

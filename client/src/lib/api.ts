@@ -60,6 +60,14 @@ export const api = {
       `/api/portfolios/${encodeURIComponent(portfolioId)}/positions/${encodeURIComponent(positionId)}`,
       { method: 'DELETE' },
     ),
+  setPositionHidden: (portfolioId: string, positionId: string, hidden: boolean) =>
+    http<{ position: Position; portfolios: Portfolio[] }>(
+      `/api/portfolios/${encodeURIComponent(portfolioId)}/positions/${encodeURIComponent(positionId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ hidden }),
+      },
+    ),
   addPositionSale: (
     portfolioId: string,
     positionId: string,

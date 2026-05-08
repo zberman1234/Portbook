@@ -46,7 +46,8 @@ interface Row {
 
 export function BulkAddForm() {
   const { add, positions, addSale } = usePortfolio();
-  const { enriched: savedEnriched } = useEnrichedPositions(positions);
+  const visiblePositions = positions.filter((position) => !position.hidden);
+  const { enriched: savedEnriched } = useEnrichedPositions(visiblePositions);
   const enriched = applySalesToEnrichedPositions(savedEnriched);
   const [text, setText] = useState('');
   const [date, setDate] = useState(todayISO());

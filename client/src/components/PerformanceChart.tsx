@@ -83,6 +83,10 @@ function annualizedSharpe(dailyReturns: number[]): number | null {
   return (mean / std) * Math.sqrt(TRADING_DAYS);
 }
 
+function performanceValueFromSignedExposure(value: number, cost: number, grossCost: number): number {
+  return grossCost + (value - cost);
+}
+
 function orderedSelection(a: string, b: string): DateSelection {
   return a <= b ? { startDate: a, endDate: b } : { startDate: b, endDate: a };
 }
@@ -291,8 +295,8 @@ export function PerformanceChart({ positions }: Props) {
       const sharesPerPosition = positions.map((p, i) => {
         const buyPrice = firstPriceOnOrAfter(sortedDates, priceByDate, p.purchaseDate);
         if (buyPrice === null || buyPrice <= 0) return null;
-        const costBasis = costBasisByPosition[i];
-        return costBasis !== 0 ? costBasis / buyPrice : null;
+        const startingCapital = Math.abs(costBasisByPosition[i]);
+        return startingCapital !== 0 ? startingCapital / buyPrice : null;
       });
       return { sharesPerPosition, priceByDate, sortedDates };
     });
@@ -324,7 +328,11 @@ export function PerformanceChart({ positions }: Props) {
       }
       if (grossCost <= 0) continue;
 
-      const row: ChartRow = { date: d, value, cost };
+      const row: ChartRow = {
+        date: d,
+        value: performanceValueFromSignedExposure(value, cost, grossCost),
+        cost: grossCost,
+      };
 
       benchSnaps.forEach((bs, bi) => {
         const priceOnDay = bs.priceByDate.get(d);

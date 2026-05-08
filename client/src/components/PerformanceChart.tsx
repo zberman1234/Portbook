@@ -128,6 +128,29 @@ export function PerformanceChart({ positions }: Props) {
     );
   }, [positions, today]);
 
+  const symbols = useMemo(() => positions.map((p) => p.symbol), [positions]);
+
+  const quotesQuery = useQuery({
+    queryKey: ['quote', [...symbols].sort().join(',')],
+    queryFn: () => (symbols.length === 0 ? [] : api.quote(symbols)),
+    enabled: positions.length > 0,
+    staleTime: 1000 * 60,
+  });
+
+  const quotesBySymbol = useMemo(
+    () => new Map((quotesQuery.data ?? []).map((q) => [q.symbol, q])),
+    [quotesQuery.data],
+  );
+
+  // Prefer the live quote's currency as the trading-currency for FX lookups.
+  // Stored currency can be stale (e.g. legacy data saved as "USD" for 2337.TW
+  // when Yahoo's search omitted the currency on the hit); the live quote is
+  // fixed by the exchange and is therefore authoritative.
+  const effectiveCurrencies = useMemo(
+    () => positions.map((p) => quotesBySymbol.get(p.symbol)?.currency ?? p.currency ?? 'USD'),
+    [positions, quotesBySymbol],
+  );
+
   const historyQueries = useQueries({
     queries: positions.map((p) => ({
       queryKey: ['history', p.symbol, p.purchaseDate],
@@ -137,16 +160,19 @@ export function PerformanceChart({ positions }: Props) {
   });
 
   const fxSeriesQueries = useQueries({
-    queries: positions.map((p) => ({
-      queryKey: ['history', `${(p.currency ?? 'USD').toUpperCase()}USD=X`, p.purchaseDate],
-      queryFn: () => {
-        const cur = (p.currency ?? 'USD').toUpperCase();
-        if (cur === 'USD') return Promise.resolve([]);
-        const pair = `${cur}USD=X`;
-        return api.history(pair, p.purchaseDate, today);
-      },
-      staleTime: 1000 * 60 * 60,
-    })),
+    queries: positions.map((p, i) => {
+      const cur = effectiveCurrencies[i];
+      const cu = cur.toUpperCase();
+      return {
+        queryKey: ['history', `${cu}USD=X`, p.purchaseDate],
+        queryFn: () => {
+          if (cu === 'USD') return Promise.resolve([]);
+          const pair = `${cu}USD=X`;
+          return api.history(pair, p.purchaseDate, today);
+        },
+        staleTime: 1000 * 60 * 60,
+      };
+    }),
   });
 
   const buyCloseQueries = useQueries({
@@ -158,9 +184,9 @@ export function PerformanceChart({ positions }: Props) {
   });
 
   const buyFxQueries = useQueries({
-    queries: positions.map((p) => ({
-      queryKey: ['fx', (p.currency ?? 'USD').toUpperCase(), p.purchaseDate],
-      queryFn: () => api.fx(p.currency ?? 'USD', p.purchaseDate),
+    queries: positions.map((p, i) => ({
+      queryKey: ['fx', effectiveCurrencies[i].toUpperCase(), p.purchaseDate],
+      queryFn: () => api.fx(effectiveCurrencies[i], p.purchaseDate),
       staleTime: 1000 * 60 * 60 * 24,
     })),
   });
@@ -199,7 +225,9 @@ export function PerformanceChart({ positions }: Props) {
 
     const snaps: (Snap | null)[] = positions.map((p, i) => {
       const buyClose = buyCloseQueries[i]?.data;
-      const buyFxRate = buyFxQueries[i]?.data?.rate ?? (p.currency.toUpperCase() === 'USD' ? 1 : null);
+      const effectiveCurrency = effectiveCurrencies[i];
+      const isUsd = effectiveCurrency.toUpperCase() === 'USD';
+      const buyFxRate = buyFxQueries[i]?.data?.rate ?? (isUsd ? 1 : null);
       const priceOverride = explicitPurchasePriceUSD(p);
       if (
         priceOverride === null &&
@@ -208,7 +236,7 @@ export function PerformanceChart({ positions }: Props) {
         return null;
       }
 
-      const buyNative = buyClose ? normalizeNative(buyClose.close, p.currency) ?? 0 : null;
+      const buyNative = buyClose ? normalizeNative(buyClose.close, effectiveCurrency) ?? 0 : null;
       const purchasePriceUSD =
         buyNative !== null && buyFxRate !== null && buyFxRate !== undefined
           ? buyNative * buyFxRate
@@ -219,7 +247,7 @@ export function PerformanceChart({ positions }: Props) {
       const history = historyQueries[i]?.data ?? [];
       const fxHistory = fxSeriesQueries[i]?.data ?? [];
       const fxByDate = new Map<string, number>();
-      if (p.currency.toUpperCase() === 'USD') {
+      if (isUsd) {
         fxByDate.set('__identity__', 1);
       } else {
         fxHistory.forEach((r) => {
@@ -232,9 +260,9 @@ export function PerformanceChart({ positions }: Props) {
       const sales = (p.sales ?? []).slice().sort((a, b) => a.saleDate.localeCompare(b.saleDate));
       let lastFx = buyFxRate ?? null;
       history.forEach((r) => {
-        const closeNative = normalizeNative(r.adjclose ?? r.close, p.currency);
+        const closeNative = normalizeNative(r.adjclose ?? r.close, effectiveCurrency);
         if (closeNative === null) return;
-        if (p.currency.toUpperCase() !== 'USD') {
+        if (!isUsd) {
           const fxOnDay = fxByDate.get(r.date);
           if (typeof fxOnDay === 'number') lastFx = fxOnDay;
         }
@@ -367,7 +395,7 @@ export function PerformanceChart({ positions }: Props) {
     ];
 
     return { chartData: rows, stats };
-  }, [positions, historyQueries, fxSeriesQueries, buyCloseQueries, buyFxQueries, spyHistoryQuery.data, smhHistoryQuery.data]);
+  }, [positions, effectiveCurrencies, historyQueries, fxSeriesQueries, buyCloseQueries, buyFxQueries, spyHistoryQuery.data, smhHistoryQuery.data]);
 
   const activeRange =
     dragStartDate && dragEndDate ? orderedSelection(dragStartDate, dragEndDate) : selectedRange;

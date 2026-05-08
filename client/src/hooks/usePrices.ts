@@ -24,26 +24,35 @@ export function useEnrichedPositions(positions: Position[]) {
     })),
   });
 
+  const quotesBySymbol = new Map((quotesQuery.data ?? []).map((q) => [q.symbol, q]));
+
+  // Prefer the live quote's currency as the trading-currency for FX lookups.
+  // Stored currency can be wrong (e.g. saved as "USD" for 2337.TW when Yahoo's
+  // search omitted the currency on the original hit); the live quote is fixed
+  // by the exchange and is therefore authoritative. Falls back to the stored
+  // currency until quotes have loaded.
+  const effectiveCurrencies = positions.map(
+    (p) => quotesBySymbol.get(p.symbol)?.currency ?? p.currency ?? 'USD',
+  );
+
   const buyFxQueries = useQueries({
-    queries: positions.map((p) => ({
-      queryKey: ['fx', p.currency ?? 'USD', p.purchaseDate],
-      queryFn: () => api.fx(p.currency ?? 'USD', p.purchaseDate),
+    queries: positions.map((p, i) => ({
+      queryKey: ['fx', effectiveCurrencies[i], p.purchaseDate],
+      queryFn: () => api.fx(effectiveCurrencies[i], p.purchaseDate),
       staleTime: 1000 * 60 * 60 * 24,
     })),
   });
 
   const currentFxQueries = useQueries({
-    queries: positions.map((p) => ({
-      queryKey: ['fx', p.currency ?? 'USD', 'latest'],
+    queries: positions.map((_, i) => ({
+      queryKey: ['fx', effectiveCurrencies[i], 'latest'],
       queryFn: () => {
         const today = new Date().toISOString().slice(0, 10);
-        return api.fx(p.currency ?? 'USD', today);
+        return api.fx(effectiveCurrencies[i], today);
       },
       staleTime: 1000 * 60 * 10,
     })),
   });
-
-  const quotesBySymbol = new Map((quotesQuery.data ?? []).map((q) => [q.symbol, q]));
 
   const enriched: EnrichedPosition[] = positions.map((p, i) => {
     const bundle: PriceBundle = {

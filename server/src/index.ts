@@ -134,6 +134,51 @@ async function backfillMissingSalePrices(portfolios: Portfolio[]): Promise<Portf
   return updated;
 }
 
+/**
+ * Heal positions whose stored `currency` doesn't match the live quote's
+ * trading currency. Earlier code paths could fall back to "USD" when Yahoo's
+ * `search` response omitted a currency, which then poisoned downstream FX
+ * lookups (e.g. 2337.TW reporting TWD prices as USD). The trading currency
+ * for a listed symbol is fixed by the exchange, so the live quote is the
+ * authoritative source. Best-effort: silently skip when Yahoo is unreachable
+ * or the symbol can't be resolved.
+ */
+async function backfillPositionCurrencies(portfolios: Portfolio[]): Promise<Portfolio[]> {
+  const symbols = new Set<string>();
+  for (const portfolio of portfolios) {
+    for (const position of portfolio.positions) {
+      if (position.symbol) symbols.add(position.symbol);
+    }
+  }
+  if (symbols.size === 0) return portfolios;
+
+  const liveCurrencies = new Map<string, string>();
+  try {
+    const quotes = await getQuotes(Array.from(symbols));
+    for (const q of quotes) {
+      if (q.currency) liveCurrencies.set(q.symbol, q.currency);
+    }
+  } catch {
+    return portfolios;
+  }
+
+  let changed = false;
+  const updated = portfolios.map((portfolio) => ({
+    ...portfolio,
+    positions: portfolio.positions.map((position) => {
+      const live = liveCurrencies.get(position.symbol);
+      if (!live || live === position.currency) return position;
+      changed = true;
+      return { ...position, currency: live };
+    }),
+  }));
+
+  if (changed) {
+    await savePortfolios(updated);
+  }
+  return updated;
+}
+
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
@@ -145,7 +190,9 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/portfolios', async (_req, res, next) => {
   try {
-    const portfolios = await backfillMissingSalePrices(await loadPortfolios());
+    const loaded = await loadPortfolios();
+    const withCurrencies = await backfillPositionCurrencies(loaded);
+    const portfolios = await backfillMissingSalePrices(withCurrencies);
     res.json(portfolios);
   } catch (err) {
     next(err);
@@ -255,13 +302,27 @@ app.post('/api/portfolios/:portfolioId/positions', async (req, res, next) => {
     // Preserve case on currency: Yahoo uses lowercase suffixes (GBp, ZAc, ILA)
     // to indicate sub-unit pricing (pence/cents/agorot). Uppercasing here would
     // erase that signal and produce purchase prices 100x too high for LSE etc.
-    const rawCurrency = (currency ?? 'USD').trim();
+    const rawCurrency = (currency ?? '').trim();
+    const normalizedSymbol = symbol.trim().toUpperCase();
+    // Yahoo's `search` endpoint sometimes omits `currency` on a hit, which
+    // historically caused the client to fall back to "USD" for foreign
+    // listings (e.g. 2337.TW persisted as USD instead of TWD). Use the live
+    // `quote` as the authoritative source — the trading currency is fixed
+    // by the exchange.
+    let resolvedCurrency = rawCurrency || 'USD';
+    try {
+      const liveQuote = (await getQuotes([normalizedSymbol]))[0];
+      if (liveQuote?.currency) resolvedCurrency = liveQuote.currency;
+    } catch {
+      /* best-effort: fall back to caller-supplied currency */
+    }
+
     const position: Position = {
       id: randomUUID(),
-      symbol: symbol.trim().toUpperCase(),
-      name: name?.trim() ?? symbol.trim().toUpperCase(),
+      symbol: normalizedSymbol,
+      name: name?.trim() ?? normalizedSymbol,
       exchange: exchange ?? '',
-      currency: rawCurrency || 'USD',
+      currency: resolvedCurrency,
       purchaseDate,
       ...buyFields,
       ...(purchasePriceUSD !== undefined ? { purchasePriceUSD } : {}),

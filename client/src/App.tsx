@@ -7,6 +7,7 @@ import { PerformanceChart } from './components/PerformanceChart';
 import { PortfolioTabs } from './components/PortfolioTabs';
 import { usePortfolio } from './hooks/usePortfolio';
 import { useEnrichedPositions } from './hooks/usePrices';
+import { totals } from './lib/calc';
 import { applySalesToEnrichedPositions, portfolioFunding } from './lib/positions';
 
 export default function App() {
@@ -37,6 +38,12 @@ export default function App() {
   } = useEnrichedPositions(visiblePositions);
   const enriched = applySalesToEnrichedPositions(savedEnriched);
   const { cashUSD, totalCostBasisUSD } = portfolioFunding(savedEnriched);
+  const portfolioTotals = totals(enriched);
+  const portfolioCostUSD = totalCostBasisUSD ?? portfolioTotals.cost;
+  const portfolioValueUSD = portfolioTotals.value + cashUSD;
+  const portfolioGainUSD = portfolioValueUSD - portfolioCostUSD;
+  const portfolioGainPct =
+    Math.abs(portfolioCostUSD) > 0 ? portfolioGainUSD / Math.abs(portfolioCostUSD) : 0;
 
   const handleRefresh = () => {
     qc.invalidateQueries({ queryKey: ['portfolios'] });
@@ -104,7 +111,14 @@ export default function App() {
             <div className="lg:h-[30.25rem] lg:min-h-0">
               <AllocationChart enriched={enriched} cashUSD={cashUSD} />
             </div>
-            <PerformanceChart positions={visiblePositions} />
+            <PerformanceChart
+              positions={visiblePositions}
+              portfolioReturn={{
+                gain: portfolioGainUSD,
+                pct: portfolioGainPct,
+                endValue: portfolioValueUSD,
+              }}
+            />
           </div>
         ) : null}
 

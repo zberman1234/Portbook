@@ -21,6 +21,11 @@ import type { HistoryRow, Position } from '../types';
 
 interface Props {
   positions: Position[];
+  portfolioReturn?: {
+    gain: number;
+    pct: number;
+    endValue: number;
+  };
 }
 
 type ChartRow = { date: string; value: number; cost: number;[key: string]: number | string };
@@ -118,7 +123,7 @@ function rangeReturn(rows: ChartRow[], key: string, startDate: string, endDate: 
   };
 }
 
-export function PerformanceChart({ positions }: Props) {
+export function PerformanceChart({ positions, portfolioReturn }: Props) {
   const today = todayISO();
   const [dragStartDate, setDragStartDate] = useState<string | null>(null);
   const [dragEndDate, setDragEndDate] = useState<string | null>(null);
@@ -392,7 +397,7 @@ export function PerformanceChart({ positions }: Props) {
         label: 'Portfolio',
         color: '#10b981',
         sharpe: annualizedSharpe(dailyReturnsFrom(rows, 'value')),
-        ret: totalReturn('value'),
+        ret: portfolioReturn ?? totalReturn('value'),
       },
       ...BENCHMARKS.map((b) => ({
         label: b.label,
@@ -403,7 +408,7 @@ export function PerformanceChart({ positions }: Props) {
     ];
 
     return { chartData: rows, stats };
-  }, [positions, effectiveCurrencies, historyQueries, fxSeriesQueries, buyCloseQueries, buyFxQueries, spyHistoryQuery.data, smhHistoryQuery.data]);
+  }, [positions, portfolioReturn, effectiveCurrencies, historyQueries, fxSeriesQueries, buyCloseQueries, buyFxQueries, spyHistoryQuery.data, smhHistoryQuery.data]);
 
   const activeRange =
     dragStartDate && dragEndDate ? orderedSelection(dragStartDate, dragEndDate) : selectedRange;

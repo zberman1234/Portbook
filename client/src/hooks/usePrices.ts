@@ -3,6 +3,20 @@ import { api } from '../lib/api';
 import { enrich, type PriceBundle } from '../lib/calc';
 import type { EnrichedPosition, Position } from '../types';
 
+function todayLocalISO(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function quoteDateISO(regularMarketTime: string | undefined): string | null {
+  if (!regularMarketTime || regularMarketTime.length < 10) return null;
+  const date = regularMarketTime.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+}
+
 /**
  * Fetch current quotes (batched) + per-position purchase-day close + FX on both dates.
  */
@@ -34,6 +48,10 @@ export function useEnrichedPositions(positions: Position[]) {
   const effectiveCurrencies = positions.map(
     (p) => quotesBySymbol.get(p.symbol)?.currency ?? p.currency ?? 'USD',
   );
+  const fallbackToday = todayLocalISO();
+  const effectiveCurrentDates = positions.map((p) =>
+    quoteDateISO(quotesBySymbol.get(p.symbol)?.regularMarketTime) ?? fallbackToday,
+  );
 
   const buyFxQueries = useQueries({
     queries: positions.map((p, i) => ({
@@ -45,11 +63,8 @@ export function useEnrichedPositions(positions: Position[]) {
 
   const currentFxQueries = useQueries({
     queries: positions.map((_, i) => ({
-      queryKey: ['fx', effectiveCurrencies[i], 'latest'],
-      queryFn: () => {
-        const today = new Date().toISOString().slice(0, 10);
-        return api.fx(effectiveCurrencies[i], today);
-      },
+      queryKey: ['fx', effectiveCurrencies[i], effectiveCurrentDates[i], 'current'],
+      queryFn: () => api.fx(effectiveCurrencies[i], effectiveCurrentDates[i]),
       staleTime: 1000 * 60 * 10,
     })),
   });

@@ -959,16 +959,22 @@ function HiddenPositionsDropdown({
   rows,
   open,
   hidingPosition,
+  removing,
   onToggle,
   onUnhide,
   onUnhideAll,
+  onRemove,
+  onRemoveAll,
 }: {
   rows: HiddenPositionRow[];
   open: boolean;
   hidingPosition: boolean;
+  removing: boolean;
   onToggle: () => void;
   onUnhide: (positionId: string) => Promise<unknown>;
   onUnhideAll: () => Promise<unknown>;
+  onRemove: (positionId: string) => Promise<unknown>;
+  onRemoveAll: () => Promise<unknown>;
 }) {
   if (rows.length === 0) return null;
   const openCount = rows.filter((row) => !row.closed).length;
@@ -988,14 +994,30 @@ function HiddenPositionsDropdown({
         </div>
         <div className="flex items-center gap-2">
           {rows.length > 1 ? (
-            <button
-              type="button"
-              disabled={hidingPosition}
-              onClick={(e) => { e.stopPropagation(); void onUnhideAll(); }}
-              className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
-            >
-              {hidingPosition ? 'Saving…' : 'Unhide all'}
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={hidingPosition || removing}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onUnhideAll();
+                }}
+                className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
+              >
+                {hidingPosition ? 'Saving…' : 'Unhide all'}
+              </button>
+              <button
+                type="button"
+                disabled={hidingPosition || removing}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onRemoveAll();
+                }}
+                className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-red-500/50 hover:text-red-300 disabled:opacity-50"
+              >
+                {removing ? 'Removing…' : 'Remove all'}
+              </button>
+            </>
           ) : null}
           <span className={`text-sm text-neutral-500 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}>▶</span>
         </div>
@@ -1043,14 +1065,24 @@ function HiddenPositionsDropdown({
                       {row.closed ? 'Closed' : 'Open'}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <button
-                        type="button"
-                        disabled={hidingPosition}
-                        onClick={() => void onUnhide(row.position.id)}
-                        className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
-                      >
-                        {hidingPosition ? 'Saving…' : 'Unhide'}
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          disabled={hidingPosition || removing}
+                          onClick={() => void onUnhide(row.position.id)}
+                          className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
+                        >
+                          {hidingPosition ? 'Saving…' : 'Unhide'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={hidingPosition || removing}
+                          onClick={() => void onRemove(row.position.id)}
+                          className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-red-500/50 hover:text-red-300 disabled:opacity-50"
+                        >
+                          {removing ? 'Removing…' : 'Remove'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1496,10 +1528,15 @@ export function PositionsTable({
   }
 
   async function removeLots(lots: EnrichedPosition[]) {
-    for (const lot of lots) {
-      await remove(lot.id);
-    }
+    await removePositionIds(lots.map((lot) => lot.id));
     closeRemovePopover();
+  }
+
+  async function removePositionIds(positionIds: string[]) {
+    const uniqueIds = Array.from(new Set(positionIds));
+    for (const positionId of uniqueIds) {
+      await remove(positionId);
+    }
   }
 
   async function removeSelectedLots(row: ActivePositionRow) {
@@ -1816,9 +1853,12 @@ export function PositionsTable({
           rows={hiddenRows}
           open={hiddenOpen}
           hidingPosition={hidingPosition}
+          removing={removing}
           onToggle={() => setHiddenOpen((open) => !open)}
           onUnhide={(positionId) => setHiddenForPositionIds([positionId], false)}
           onUnhideAll={() => setHiddenForPositionIds(hiddenRows.map((r) => r.position.id), false)}
+          onRemove={(positionId) => removePositionIds([positionId])}
+          onRemoveAll={() => removePositionIds(hiddenRows.map((r) => r.position.id))}
         />
       </div>
     </div>

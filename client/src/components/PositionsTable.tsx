@@ -250,6 +250,16 @@ function fmtPriceSigned(n: number | undefined | null): string {
   return `${sign}${fmtPrice(Math.abs(n))}`;
 }
 
+const COMPACT_NUM = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
+
+function fmtMarketCap(n: number | undefined | null): string {
+  if (n === undefined || n === null || !Number.isFinite(n)) return '—';
+  return COMPACT_NUM.format(n);
+}
+
 function SellFormRow({
   position,
   defaultShares,
@@ -539,6 +549,7 @@ function aggregateActiveGroup(groupKey: string, lots: EnrichedPosition[]): Activ
     purchasePriceNative: firstPricedLot.purchasePriceNative,
     currentPriceUSD: firstPricedLot.currentPriceUSD,
     currentPriceNative: firstPricedLot.currentPriceNative,
+    marketCap: firstPricedLot.marketCap,
     costBasisUSD,
     marketValueUSD,
     totalGainUSD,
@@ -1217,6 +1228,9 @@ function PositionDropdown({ position, open }: { position: ActivePositionRow; ope
                   </div>
                   <div className="text-right">
                     <div className="text-xs text-neutral-500">{position.currency}</div>
+                    <div className="text-[11px] text-neutral-500">
+                      Mkt cap <span className="num">{fmtMarketCap(position.marketCap)}</span>
+                    </div>
                     {!position.error && windowStats.ret ? (
                       <div className={`text-xs num ${colorClass(windowStats.ret.pct)}`}>
                         {fmtPriceSigned(windowStats.ret.gain)} ({fmtPct(windowStats.ret.pct)}){' '}

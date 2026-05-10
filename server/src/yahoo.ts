@@ -44,6 +44,7 @@ export interface QuoteSnapshot {
   regularMarketPrice?: number;
   regularMarketChangePercent?: number;
   regularMarketTime?: string;
+  marketCap?: number;
 }
 
 export async function searchSymbols(q: string): Promise<SearchHit[]> {
@@ -84,6 +85,7 @@ export async function getQuotes(symbols: string[]): Promise<QuoteSnapshot[]> {
       regularMarketChangePercent:
         typeof q.regularMarketChangePercent === 'number' ? q.regularMarketChangePercent : undefined,
       regularMarketTime: q.regularMarketTime instanceof Date ? q.regularMarketTime.toISOString() : undefined,
+      marketCap: typeof q.marketCap === 'number' ? q.marketCap : undefined,
     }));
 
   quoteCache.set(key, snapshots);

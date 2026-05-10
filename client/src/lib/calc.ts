@@ -145,6 +145,7 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
       purchasePriceDate: bundle.purchaseClose?.date ?? position.purchaseDate,
       purchasePriceNative: buyNative?.price ?? resolvedPurchasePriceUSD ?? 0,
       purchasePriceUSD: resolvedPurchasePriceUSD ?? 0,
+      marketCap: typeof q?.marketCap === 'number' ? q.marketCap : undefined,
       costBasisUSD: lot.costBasisUSD,
       error: 'No current quote',
     };
@@ -181,6 +182,7 @@ export function enrich(position: Position, bundle: PriceBundle): EnrichedPositio
     purchasePriceUSD: resolvedPurchasePriceUSD ?? 0,
     currentPriceNative: currentNative.price,
     currentPriceUSD,
+    marketCap: typeof q?.marketCap === 'number' ? q.marketCap : undefined,
     costBasisUSD: lot.costBasisUSD,
     marketValueUSD,
     totalGainUSD,

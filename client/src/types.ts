@@ -45,6 +45,7 @@ export interface QuoteSnapshot {
   regularMarketPrice?: number;
   regularMarketChangePercent?: number;
   regularMarketTime?: string;
+  marketCap?: number;
 }
 
 export interface HistoryRow {
@@ -61,6 +62,7 @@ export interface EnrichedPosition extends Position {
   purchasePriceNative: number;
   currentPriceUSD: number;
   currentPriceNative: number;
+  marketCap?: number;
   costBasisUSD: number;
   marketValueUSD: number;
   totalGainUSD: number;

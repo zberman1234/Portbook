@@ -35,6 +35,22 @@ type DateSelection = {
   endDate: string;
 };
 
+type TimeWindowKey = '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | '2Y' | '5Y' | 'ALL';
+
+const TIME_WINDOWS: { key: TimeWindowKey; label: string }[] = [
+  { key: '1D', label: '1D' },
+  { key: '1W', label: '1W' },
+  { key: '1M', label: '1M' },
+  { key: '3M', label: '3M' },
+  { key: '6M', label: '6M' },
+  { key: '1Y', label: '1Y' },
+  { key: '2Y', label: '2Y' },
+  { key: '5Y', label: '5Y' },
+  { key: 'ALL', label: 'ALL' },
+];
+
+const DEFAULT_PERFORMANCE_WINDOW: TimeWindowKey = 'ALL';
+
 const BENCHMARKS: { symbol: string; label: string; color: string }[] = [
   { symbol: 'SPY', label: 'S&P 500 (SPY)', color: '#60a5fa' },
   { symbol: 'SMH', label: 'SMH', color: '#f59e0b' },
@@ -44,6 +60,45 @@ const TRADING_DAYS = 252;
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function shiftDateISO(dateISO: string, amount: number, unit: 'day' | 'month' | 'year'): string {
+  const date = new Date(`${dateISO}T00:00:00Z`);
+  if (unit === 'day') date.setUTCDate(date.getUTCDate() + amount);
+  if (unit === 'month') date.setUTCMonth(date.getUTCMonth() + amount);
+  if (unit === 'year') date.setUTCFullYear(date.getUTCFullYear() + amount);
+  return date.toISOString().slice(0, 10);
+}
+
+function windowStartDate(windowKey: TimeWindowKey, today: string): string | null {
+  switch (windowKey) {
+    case '1D':
+      return shiftDateISO(today, -1, 'day');
+    case '1W':
+      return shiftDateISO(today, -7, 'day');
+    case '1M':
+      return shiftDateISO(today, -1, 'month');
+    case '3M':
+      return shiftDateISO(today, -3, 'month');
+    case '6M':
+      return shiftDateISO(today, -6, 'month');
+    case '1Y':
+      return shiftDateISO(today, -1, 'year');
+    case '2Y':
+      return shiftDateISO(today, -2, 'year');
+    case '5Y':
+      return shiftDateISO(today, -5, 'year');
+    case 'ALL':
+      return null;
+  }
+}
+
+function visibleRowsForWindow(rows: ChartRow[], windowKey: TimeWindowKey, today: string): ChartRow[] {
+  const startDate = windowStartDate(windowKey, today);
+  if (!startDate) return rows;
+  const windowRows = rows.filter((row) => row.date >= startDate);
+  if (windowRows.length > 0) return windowRows;
+  return windowKey === '1D' ? rows.slice(-2) : rows.slice(-1);
 }
 
 function normalizeNative(price: number | null, currency: string | undefined): number | null {
@@ -123,8 +178,36 @@ function rangeReturn(rows: ChartRow[], key: string, startDate: string, endDate: 
   };
 }
 
+function dailyReturnsFromSeries(series: ChartRow[], key: string): number[] {
+  const out: number[] = [];
+  for (let i = 1; i < series.length; i++) {
+    const prev = series[i - 1];
+    const cur = series[i];
+    if (cur.cost !== prev.cost) continue;
+    const a = cur[key];
+    const b = prev[key];
+    if (typeof a !== 'number' || typeof b !== 'number' || b === 0) continue;
+    out.push((a - b) / Math.abs(b));
+  }
+  return out;
+}
+
+function formatDateRange(startDate: string | null, endDate: string | null): string {
+  if (!startDate || !endDate) return '';
+  const formatter = new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+  return `${formatter.format(new Date(`${startDate}T00:00:00Z`))}–${formatter.format(
+    new Date(`${endDate}T00:00:00Z`),
+  )}`;
+}
+
 export function PerformanceChart({ positions, portfolioReturn }: Props) {
   const today = todayISO();
+  const [selectedWindow, setSelectedWindow] = useState<TimeWindowKey>(DEFAULT_PERFORMANCE_WINDOW);
   const [dragStartDate, setDragStartDate] = useState<string | null>(null);
   const [dragEndDate, setDragEndDate] = useState<string | null>(null);
   const [selectedRange, setSelectedRange] = useState<DateSelection | null>(null);
@@ -360,20 +443,6 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
       rows.push(row);
     }
 
-    function dailyReturnsFrom(series: ChartRow[], key: string): number[] {
-      const out: number[] = [];
-      for (let i = 1; i < series.length; i++) {
-        const prev = series[i - 1];
-        const cur = series[i];
-        if (cur.cost !== prev.cost) continue;
-        const a = cur[key];
-        const b = prev[key];
-        if (typeof a !== 'number' || typeof b !== 'number' || b === 0) continue;
-        out.push((a - b) / Math.abs(b));
-      }
-      return out;
-    }
-
     const lastRow = rows[rows.length - 1];
     const endCost = lastRow?.cost ?? 0;
 
@@ -396,19 +465,55 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
       {
         label: 'Portfolio',
         color: '#10b981',
-        sharpe: annualizedSharpe(dailyReturnsFrom(rows, 'value')),
+        sharpe: annualizedSharpe(dailyReturnsFromSeries(rows, 'value')),
         ret: portfolioReturn ?? totalReturn('value'),
       },
       ...BENCHMARKS.map((b) => ({
         label: b.label,
         color: b.color,
-        sharpe: annualizedSharpe(dailyReturnsFrom(rows, b.symbol)),
+        sharpe: annualizedSharpe(dailyReturnsFromSeries(rows, b.symbol)),
         ret: totalReturn(b.symbol),
       })),
     ];
 
     return { chartData: rows, stats };
   }, [positions, portfolioReturn, effectiveCurrencies, historyQueries, fxSeriesQueries, buyCloseQueries, buyFxQueries, spyHistoryQuery.data, smhHistoryQuery.data]);
+
+  const visibleChartData = useMemo(
+    () => visibleRowsForWindow(chartData, selectedWindow, today),
+    [chartData, selectedWindow, today],
+  );
+
+  const chartDataForPlot = selectedRange !== null ? chartData : visibleChartData;
+
+  const displayStats = useMemo(() => {
+    if (selectedRange !== null || selectedWindow === 'ALL') return stats;
+    const slice = visibleChartData;
+    if (slice.length === 0) return stats;
+    const start = slice[0].date;
+    const end = slice[slice.length - 1].date;
+    type Stat = {
+      label: string;
+      color: string;
+      sharpe: number | null;
+      ret: { gain: number; pct: number; endValue: number } | null;
+    };
+    const windowed: Stat[] = [
+      {
+        label: 'Portfolio',
+        color: '#10b981',
+        sharpe: annualizedSharpe(dailyReturnsFromSeries(slice, 'value')),
+        ret: rangeReturn(chartData, 'value', start, end),
+      },
+      ...BENCHMARKS.map((b) => ({
+        label: b.label,
+        color: b.color,
+        sharpe: annualizedSharpe(dailyReturnsFromSeries(slice, b.symbol)),
+        ret: rangeReturn(chartData, b.symbol, start, end),
+      })),
+    ];
+    return windowed;
+  }, [chartData, stats, selectedRange, selectedWindow, visibleChartData]);
 
   const activeRange =
     dragStartDate && dragEndDate ? orderedSelection(dragStartDate, dragEndDate) : selectedRange;
@@ -455,11 +560,41 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
     setDragEndDate(null);
   };
 
+  const rangeSubtitle =
+    selectedWindow === 'ALL'
+      ? `since ${earliest}`
+      : formatDateRange(
+          visibleChartData[0]?.date ?? null,
+          visibleChartData[visibleChartData.length - 1]?.date ?? null,
+        );
+
   return (
     <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 lg:min-h-[30.25rem]">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-medium text-neutral-300">Performance</h2>
-        <span className="text-xs text-neutral-500">since {earliest}</span>
+      <div className="mb-4 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-medium text-neutral-300">Performance</h2>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {TIME_WINDOWS.map((window) => (
+                <button
+                  key={window.key}
+                  type="button"
+                  className={`rounded border px-2 py-1 text-[11px] transition ${selectedWindow === window.key
+                    ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
+                    : 'border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200'
+                    }`}
+                  onClick={() => {
+                    setSelectedWindow(window.key);
+                    setSelectedRange(null);
+                  }}
+                >
+                  {window.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <span className="shrink-0 text-right text-xs text-neutral-500">{rangeSubtitle}</span>
+        </div>
       </div>
       {chartData.length === 0 ? (
         <div className="h-64 flex items-center justify-center text-sm text-neutral-500">
@@ -470,7 +605,7 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
           <div className="h-64 cursor-crosshair select-none">
             <ResponsiveContainer>
               <ComposedChart
-                data={chartData}
+                data={chartDataForPlot}
                 margin={{ top: 10, right: 16, bottom: 0, left: 0 }}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
@@ -639,7 +774,7 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {stats.map((s) => {
+                {displayStats.map((s) => {
                   const pct = s.ret?.pct ?? null;
                   const gain = s.ret?.gain ?? null;
                   const pctColor =

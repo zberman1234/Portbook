@@ -112,6 +112,7 @@ export default function App() {
               <AllocationChart enriched={enriched} cashUSD={cashUSD} />
             </div>
             <PerformanceChart
+              key={activePortfolioId ?? ''}
               positions={visiblePositions}
               portfolioReturn={{
                 gain: portfolioGainUSD,

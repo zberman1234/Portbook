@@ -296,11 +296,12 @@ function rangeReturn(rows: ChartRow[], key: string, startDate: string, endDate: 
 }
 
 // Pick the row field to treat as the external cash flow for a given series.
-// Portfolio uses `flow` (deposits − withdrawn sale proceeds). Benchmarks hold
-// SPY/SMH bought at each purchase date and never sell — withdrawals don't
-// affect them — so they use `cost` (activation deposits only).
-function flowKeyFor(key: string): 'flow' | 'cost' {
-  return key === 'value' ? 'flow' : 'cost';
+// Portfolio uses `flow` (deposits − withdrawn sale proceeds). Benchmarks use
+// a per-symbol flow field (`${symbol}_flow`) that equals the portfolio's gross
+// cost basis minus the cumulative dollar value withdrawn from that benchmark
+// when equivalent portfolio sales are simulated.
+function flowKeyFor(key: string): string {
+  return key === 'value' ? 'flow' : `${key}_flow`;
 }
 
 // Daily-Valuation TWR: chain (1 + period_return) where period_return treats the
@@ -325,14 +326,14 @@ function twrRangeReturn(rows: ChartRow[], key: string, startDate: string, endDat
     const prevV = prev[key];
     const curV = cur[key];
     if (typeof prevV !== 'number' || typeof curV !== 'number') continue;
-    const cashFlow = (cur[fk] ?? 0) - (prev[fk] ?? 0);
+    const cashFlow = ((cur[fk] as number) ?? 0) - ((prev[fk] as number) ?? 0);
     const denom = prevV + cashFlow;
     if (denom <= 0) continue;
     twr *= 1 + (curV - denom) / denom;
   }
 
   const pct = twr - 1;
-  const netFlow = (end[fk] ?? 0) - (start[fk] ?? 0);
+  const netFlow = ((end[fk] as number) ?? 0) - ((start[fk] as number) ?? 0);
   const gain = endValue - startValue - netFlow;
   return { gain, pct, startValue, endValue };
 }
@@ -354,7 +355,7 @@ function toTwrSeries(rows: ChartRow[], keys: string[]): ChartRow[] {
         const curV = cur[k];
         if (typeof prevV !== 'number' || typeof curV !== 'number') continue;
         const fk = flowKeyFor(k);
-        const cashFlow = (cur[fk] ?? 0) - (prev[fk] ?? 0);
+        const cashFlow = ((cur[fk] as number) ?? 0) - ((prev[fk] as number) ?? 0);
         const denom = prevV + cashFlow;
         if (denom <= 0) continue;
         twr[k] *= 1 + (curV - denom) / denom;
@@ -607,7 +608,13 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
 
     const costBasisByPosition = positions.map((p, i) => snaps[i]?.costBasisUSD ?? costBasisUSD(p));
 
-    type BenchSnap = { sharesPerPosition: (number | null)[]; priceByDate: Map<string, number>; sortedDates: string[] };
+    type BenchSale = { date: string; sharesToSell: number; withdrawnUSD: number };
+    type BenchSnap = {
+      sharesPerPosition: (number | null)[];
+      priceByDate: Map<string, number>;
+      sortedDates: string[];
+      salesPerPosition: BenchSale[][];
+    };
     const benchSnaps: BenchSnap[] = benchmarkQueries.map((q) => {
       const priceByDate = buildPriceMap(q.data);
       const sortedDates = Array.from(priceByDate.keys()).sort();
@@ -617,13 +624,35 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
         const startingCapital = Math.abs(costBasisByPosition[i]);
         return startingCapital !== 0 ? startingCapital / buyPrice : null;
       });
-      return { sharesPerPosition, priceByDate, sortedDates };
+      // For each position, compute equivalent benchmark sales matching cashWithdrawn
+      // portfolio sales: sell the same dollar amount from SPY/SMH at the benchmark's
+      // price on or after the sale date.
+      const salesPerPosition: BenchSale[][] = positions.map((p, i) => {
+        const initialShares = sharesPerPosition[i];
+        if (initialShares === null) return [];
+        const benchSales: BenchSale[] = [];
+        for (const sale of (p.sales ?? [])) {
+          if (!sale.cashWithdrawn) continue;
+          const withdrawnUSD = closingCashFlowUSD(p, sale);
+          if (withdrawnUSD <= 0) continue;
+          const benchPrice = firstPriceOnOrAfter(sortedDates, priceByDate, sale.saleDate);
+          if (benchPrice === null || benchPrice <= 0) continue;
+          benchSales.push({ date: sale.saleDate, sharesToSell: withdrawnUSD / benchPrice, withdrawnUSD });
+        }
+        benchSales.sort((a, b) => a.date.localeCompare(b.date));
+        return benchSales;
+      });
+      return { sharesPerPosition, priceByDate, sortedDates, salesPerPosition };
     });
 
     const rows: ChartRow[] = [];
     const prevPerSymbol = new Array<number | null>(positions.length).fill(null);
     const prevWithdrawnPerSymbol = new Array<number>(positions.length).fill(0);
     const benchLastPrice: (number | null)[] = benchmarkQueries.map(() => null);
+    // Track benchmark sale state: cumulative sold shares and withdrawn USD per benchmark per position.
+    const benchSaleIdx: number[][] = benchmarkQueries.map(() => new Array(positions.length).fill(0));
+    const benchCumSoldShares: number[][] = benchmarkQueries.map(() => new Array(positions.length).fill(0));
+    const benchCumWithdrawn: number[] = benchmarkQueries.map(() => 0);
     for (const d of allDates) {
       let value = 0;
       let cost = 0;
@@ -660,6 +689,18 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
       };
 
       benchSnaps.forEach((bs, bi) => {
+        // Apply any benchmark sales whose date has been reached.
+        for (let i = 0; i < positions.length; i++) {
+          if (activationByPosition[i] > d) continue;
+          const sales = bs.salesPerPosition[i];
+          while (benchSaleIdx[bi][i] < sales.length && sales[benchSaleIdx[bi][i]].date <= d) {
+            const s = sales[benchSaleIdx[bi][i]];
+            benchCumSoldShares[bi][i] += s.sharesToSell;
+            benchCumWithdrawn[bi] += s.withdrawnUSD;
+            benchSaleIdx[bi][i]++;
+          }
+        }
+
         const priceOnDay = bs.priceByDate.get(d);
         if (typeof priceOnDay === 'number') benchLastPrice[bi] = priceOnDay;
         const price = benchLastPrice[bi];
@@ -668,12 +709,18 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
         let any = false;
         for (let i = 0; i < positions.length; i++) {
           if (activationByPosition[i] > d) continue;
-          const sh = bs.sharesPerPosition[i];
-          if (sh === null) continue;
-          bval += sh * price;
+          const initialShares = bs.sharesPerPosition[i];
+          if (initialShares === null) continue;
+          const remainingShares = Math.max(0, initialShares - benchCumSoldShares[bi][i]);
+          bval += remainingShares * price;
           any = true;
         }
-        if (any) row[BENCHMARKS[bi].symbol] = bval;
+        if (any) {
+          row[BENCHMARKS[bi].symbol] = bval;
+          // Flow for this benchmark = portfolio gross cost basis minus cumulative
+          // dollar value withdrawn from the benchmark via simulated sales.
+          row[`${BENCHMARKS[bi].symbol}_flow`] = row.cost - benchCumWithdrawn[bi];
+        }
       });
 
       rows.push(row);
@@ -989,7 +1036,7 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
                 <thead>
                   <tr className="text-xs uppercase tracking-wide text-neutral-500">
                     <th className="pb-2 text-left font-normal"> </th>
-                    <th className="pb-2 text-right font-normal">Return</th>
+                    {chartMode === 'twr' && <th className="pb-2 text-right font-normal">Return</th>}
                     <th className="pb-2 text-right font-normal">Gain / loss</th>
                     <th className="pb-2 text-right font-normal">Start</th>
                     <th className="pb-2 text-right font-normal">End</th>
@@ -1015,9 +1062,11 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
                             {s.label}
                           </div>
                         </td>
-                        <td className={`py-1.5 text-right num ${tone}`}>
-                          {s.ret === null ? '—' : fmtPct(s.ret.pct)}
-                        </td>
+                        {chartMode === 'twr' && (
+                          <td className={`py-1.5 text-right num ${tone}`}>
+                            {s.ret === null ? '—' : fmtPct(s.ret.pct)}
+                          </td>
+                        )}
                         <td className={`py-1.5 text-right num ${tone}`}>
                           {s.ret === null ? '—' : fmtUSDSigned(s.ret.gain)}
                         </td>
@@ -1039,11 +1088,13 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
               <thead>
                 <tr className="text-xs uppercase tracking-wide text-neutral-500">
                   <th className="text-left font-normal pb-2"> </th>
-                  <th className="text-right font-normal pb-2">Return</th>
+                  {chartMode === 'twr' && <th className="text-right font-normal pb-2">Return</th>}
                   <th className="text-right font-normal pb-2">Gain / loss</th>
-                  <th className="text-right font-normal pb-2">
-                    Sharpe <span className="normal-case text-neutral-600">(ann.)</span>
-                  </th>
+                  {chartMode === 'twr' && (
+                    <th className="text-right font-normal pb-2">
+                      Sharpe <span className="normal-case text-neutral-600">(ann.)</span>
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -1073,17 +1124,21 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
                           {s.label}
                         </div>
                       </td>
-                      <td className={`py-1.5 text-right num ${pctColor}`}>
-                        {pct === null ? '—' : fmtPct(pct)}
-                      </td>
+                      {chartMode === 'twr' && (
+                        <td className={`py-1.5 text-right num ${pctColor}`}>
+                          {pct === null ? '—' : fmtPct(pct)}
+                        </td>
+                      )}
                       <td className={`py-1.5 text-right num ${gainColor}`}>
                         {gain === null ? '—' : fmtUSDSigned(gain)}
                       </td>
-                      <td className="py-1.5 text-right num text-neutral-100">
-                        {s.sharpe === null || !Number.isFinite(s.sharpe)
-                          ? '—'
-                          : s.sharpe.toFixed(2)}
-                      </td>
+                      {chartMode === 'twr' && (
+                        <td className="py-1.5 text-right num text-neutral-100">
+                          {s.sharpe === null || !Number.isFinite(s.sharpe)
+                            ? '—'
+                            : s.sharpe.toFixed(2)}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

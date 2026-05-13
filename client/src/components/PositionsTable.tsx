@@ -4,6 +4,7 @@ import { Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YA
 import { usePortfolio } from '../hooks/usePortfolio';
 import { api } from '../lib/api';
 import { colorClass, fmtPct, fmtPrice, fmtShares, fmtUSD, fmtUSDSigned } from '../lib/format';
+import { positionDayChangeUSD } from '../lib/calc';
 import { closingCashFlowUSD, SHARE_EPSILON, totalSoldShares } from '../lib/positions';
 import type { EnrichedPosition, HistoryRow, Position, PositionSale } from '../types';
 
@@ -40,7 +41,7 @@ const columns: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
   { key: 'shares', label: 'Shares', align: 'right' },
   { key: 'purchasePriceUSD', label: 'Price', align: 'right' },
   { key: 'currentPriceUSD', label: 'Last', align: 'right' },
-  { key: 'dayChangePct', label: 'Day %', align: 'right' },
+  { key: 'dayChangePct', label: 'Day', align: 'right' },
   { key: 'marketValueUSD', label: 'Market Value', align: 'right' },
   { key: 'totalGainUSD', label: 'Total G/L $', align: 'right' },
   { key: 'totalGainPct', label: 'Total G/L %', align: 'right' },
@@ -646,6 +647,10 @@ function aggregateActiveGroup(groupKey: string, lots: EnrichedPosition[]): Activ
     sales: sortedLots.flatMap((lot) => lot.sales ?? []),
     createdAt: sortedLots[0]?.createdAt ?? primary.createdAt,
   };
+}
+
+function activeRowDayChangeUSD(row: ActivePositionRow): number {
+  return row.lots.filter((lot) => !lot.error).reduce((sum, lot) => sum + positionDayChangeUSD(lot), 0);
 }
 
 function groupActivePositions(positions: EnrichedPosition[]): ActivePositionRow[] {
@@ -1491,12 +1496,14 @@ export function PositionsTable({
   const [selectedRemovalLotIds, setSelectedRemovalLotIds] = useState<string[]>([]);
   const [soldOpen, setSoldOpen] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
+  const [dayChangeMode, setDayChangeMode] = useState<'pct' | 'usd'>('pct');
 
   const sorted = useMemo(() => {
     const rows = groupActivePositions(enriched);
     rows.sort((a, b) => {
-      const av = a[sortKey];
-      const bv = b[sortKey];
+      const sortDayByUsd = sortKey === 'dayChangePct' && dayChangeMode === 'usd';
+      const av = sortDayByUsd ? activeRowDayChangeUSD(a) : a[sortKey];
+      const bv = sortDayByUsd ? activeRowDayChangeUSD(b) : b[sortKey];
       if (typeof av === 'number' && typeof bv === 'number') {
         return sortDir === 'asc' ? av - bv : bv - av;
       }
@@ -1505,7 +1512,7 @@ export function PositionsTable({
       return sortDir === 'asc' ? as.localeCompare(bs) : bs.localeCompare(as);
     });
     return rows;
-  }, [enriched, sortKey, sortDir]);
+  }, [enriched, sortKey, sortDir, dayChangeMode]);
 
   const soldRows = useMemo(
     () =>
@@ -1703,16 +1710,53 @@ export function PositionsTable({
                 <th
                   key={c.key}
                   onClick={() => onSort(c.key)}
-                  className={`px-3 py-2 cursor-pointer select-none hover:text-neutral-200 ${c.key === 'purchaseDate' ? 'min-w-[8.5rem] whitespace-nowrap' : ''
-                    } ${c.align === 'right' ? 'text-right' : 'text-left'
+                  className={`px-3 py-2 cursor-pointer select-none ${c.key === 'dayChangePct' ? '' : 'hover:text-neutral-200'
+                    } ${c.key === 'purchaseDate' ? 'min-w-[8.5rem] whitespace-nowrap' : ''
+                    } ${c.key === 'dayChangePct' ? 'text-center' : c.align === 'right' ? 'text-right' : 'text-left'
                     }`}
                 >
-                  <span className="inline-flex items-center gap-1">
-                    {c.label}
-                    {sortKey === c.key ? (
-                      <span className="text-[10px]">{sortDir === 'asc' ? '▲' : '▼'}</span>
-                    ) : null}
-                  </span>
+                  {c.key === 'dayChangePct' ? (
+                    <div className="flex flex-col items-center gap-1">
+                      <span className="inline-flex items-center gap-1 transition-colors hover:text-neutral-200">
+                        Day
+                        {sortKey === c.key ? (
+                          <span className="text-[10px]">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                        ) : null}
+                      </span>
+                      <div
+                        className="flex items-center justify-center gap-2.5 text-[12px] normal-case"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {(
+                          [
+                            { key: 'pct' as const, label: '%' },
+                            { key: 'usd' as const, label: '$' },
+                          ] as const
+                        ).map((m, i) => (
+                          <span key={m.key} className="flex items-center gap-2.5">
+                            {i > 0 ? <span className="text-neutral-700">|</span> : null}
+                            <button
+                              type="button"
+                              className={`transition ${dayChangeMode === m.key
+                                ? 'text-neutral-100 font-medium'
+                                : 'text-neutral-500 hover:text-neutral-300'
+                                }`}
+                              onClick={() => setDayChangeMode(m.key)}
+                            >
+                              {m.label}
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <span className="inline-flex items-center gap-1">
+                      {c.label}
+                      {sortKey === c.key ? (
+                        <span className="text-[10px]">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                      ) : null}
+                    </span>
+                  )}
                 </th>
               ))}
               <th className="px-3 py-2" />
@@ -1749,8 +1793,14 @@ export function PositionsTable({
                     <td className="px-3 py-2 text-right num text-neutral-300">{fmtShares(p.shares)}</td>
                     <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(p.purchasePriceUSD)}</td>
                     <td className="px-3 py-2 text-right num text-neutral-300">{fmtPrice(p.currentPriceUSD)}</td>
-                    <td className={`px-3 py-2 text-right num ${colorClass(p.dayChangePct)}`}>
-                      {p.error ? '—' : fmtPct(p.dayChangePct)}
+                    <td
+                      className={`px-3 py-2 text-right num ${p.error ? '' : colorClass(dayChangeMode === 'pct' ? p.dayChangePct : activeRowDayChangeUSD(p))}`}
+                    >
+                      {p.error
+                        ? '—'
+                        : dayChangeMode === 'pct'
+                          ? fmtPct(p.dayChangePct)
+                          : fmtUSDSigned(activeRowDayChangeUSD(p))}
                     </td>
                     <td className="px-3 py-2 text-right num text-neutral-100">
                       {p.error ? '—' : fmtUSD(p.marketValueUSD)}

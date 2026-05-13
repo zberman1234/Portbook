@@ -201,6 +201,21 @@ export interface Totals {
   validCount: number;
 }
 
+/** Approximate today’s USD P/L for one position (same rules as portfolio totals). Caller should skip rows with `error` set. */
+export function positionDayChangeUSD(p: EnrichedPosition): number {
+  const quoteDate = p.quotePriceDate;
+  if (quoteDate && p.purchasePriceDate >= quoteDate) return p.totalGainUSD;
+
+  if (p.shares < 0) {
+    const quoteDayChangePct = -p.dayChangePct;
+    const currentLiability = Math.abs(p.marketValueUSD);
+    const priorLiability = currentLiability / (1 + quoteDayChangePct);
+    return -(currentLiability - priorLiability);
+  }
+  const priorValue = p.marketValueUSD / (1 + p.dayChangePct);
+  return p.marketValueUSD - priorValue;
+}
+
 export function totals(positions: EnrichedPosition[]): Totals {
   const valid = positions.filter((p) => !p.error && Math.abs(p.marketValueUSD) > 0);
   const cost = valid.reduce((s, p) => s + p.costBasisUSD, 0);
@@ -208,20 +223,7 @@ export function totals(positions: EnrichedPosition[]): Totals {
   const value = valid.reduce((s, p) => s + p.marketValueUSD, 0);
   const gain = value - cost;
   const gainPct = grossCost > 0 ? gain / grossCost : 0;
-  const dayChangeUSD = valid.reduce((s, p) => {
-    const quoteDate = p.quotePriceDate;
-    if (quoteDate && p.purchasePriceDate >= quoteDate) return s + p.totalGainUSD;
-
-    // Approximate quote-day delta from current value and quoted day percent.
-    if (p.shares < 0) {
-      const quoteDayChangePct = -p.dayChangePct;
-      const currentLiability = Math.abs(p.marketValueUSD);
-      const priorLiability = currentLiability / (1 + quoteDayChangePct);
-      return s - (currentLiability - priorLiability);
-    }
-    const priorValue = p.marketValueUSD / (1 + p.dayChangePct);
-    return s + (p.marketValueUSD - priorValue);
-  }, 0);
+  const dayChangeUSD = valid.reduce((s, p) => s + positionDayChangeUSD(p), 0);
   const grossValue = valid.reduce((s, p) => s + Math.abs(p.marketValueUSD), 0);
   const priorGrossValue = grossValue - Math.abs(dayChangeUSD);
   const dayChangePct = priorGrossValue > 0 ? dayChangeUSD / priorGrossValue : 0;

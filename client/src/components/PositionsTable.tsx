@@ -325,6 +325,7 @@ function fmtPriceSigned(n: number | undefined | null): string {
 
 const COMPACT_NUM = new Intl.NumberFormat('en-US', {
   notation: 'compact',
+  minimumFractionDigits: 1,
   maximumFractionDigits: 1,
 });
 
@@ -1222,8 +1223,6 @@ function PositionDropdown({ position, open }: { position: ActivePositionRow; ope
     () => visibleRowsForWindow(chartData, selectedWindow, today),
     [chartData, selectedWindow, today],
   );
-  const stroke =
-    position.dayChangePct === 0 ? '#d4d4d4' : position.dayChangePct > 0 ? '#10b981' : '#f87171';
   const showLots =
     position.lots.length > 1 || position.lots.some((lot) => (lot.sales?.length ?? 0) > 0);
 
@@ -1239,6 +1238,10 @@ function PositionDropdown({ position, open }: { position: ActivePositionRow; ope
       endDate: visibleChartData[visibleChartData.length - 1]?.date ?? null,
     };
   }, [position.shares, visibleChartData]);
+
+  const windowPct = windowStats.ret?.pct ?? null;
+  const stroke =
+    windowPct === null ? '#d4d4d4' : windowPct === 0 ? '#d4d4d4' : windowPct > 0 ? '#10b981' : '#f87171';
 
   const customStats = useMemo(() => {
     if (customRange) {

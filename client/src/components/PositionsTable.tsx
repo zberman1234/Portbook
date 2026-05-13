@@ -106,6 +106,7 @@ function formatTickLabel(s: string, interval: ChartInterval): string {
       weekday: 'short',
       hour: 'numeric',
       minute: '2-digit',
+      timeZone: 'America/New_York',
       timeZoneName: 'short',
     });
   }
@@ -118,6 +119,7 @@ function formatTickLabel(s: string, interval: ChartInterval): string {
       day: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
+      timeZone: 'America/New_York',
       timeZoneName: 'short',
     });
   }

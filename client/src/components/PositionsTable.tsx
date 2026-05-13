@@ -33,6 +33,29 @@ interface Props {
   undoingSale: boolean;
 }
 
+function KebabIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width={16}
+      height={16}
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden
+    >
+      <circle cx="8" cy="3" r="1.35" />
+      <circle cx="8" cy="8" r="1.35" />
+      <circle cx="8" cy="13" r="1.35" />
+    </svg>
+  );
+}
+
+const rowActionsMenuItemClass =
+  'flex w-full items-center px-3 py-2 text-left text-xs text-neutral-200 transition hover:bg-neutral-800/80 disabled:cursor-not-allowed disabled:opacity-40';
+
+const rowActionsMenuDangerClass =
+  'flex w-full items-center px-3 py-2 text-left text-xs text-red-400/90 transition hover:bg-red-950/40 disabled:cursor-not-allowed disabled:opacity-40';
+
 const columns: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
   { key: 'symbol', label: 'Symbol' },
   { key: 'name', label: 'Name' },
@@ -759,6 +782,7 @@ function SoldPositionsDropdown({
   const [expandedGroupKey, setExpandedGroupKey] = useState<string | null>(null);
   const [undoPopoverGroupKey, setUndoPopoverGroupKey] = useState<string | null>(null);
   const [selectedUndoSaleIds, setSelectedUndoSaleIds] = useState<string[]>([]);
+  const [soldRowMenuGroupKey, setSoldRowMenuGroupKey] = useState<string | null>(null);
   const groups = useMemo(() => groupSoldRows(rows), [rows]);
 
   function closeUndoPopover() {
@@ -778,6 +802,19 @@ function SoldPositionsDropdown({
     return () => document.removeEventListener('mousedown', handleMouseDown);
   }, [undoPopoverGroupKey]);
 
+  useEffect(() => {
+    if (!soldRowMenuGroupKey) return;
+
+    function handleMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest('[data-sold-row-kebab-root]')) return;
+      setSoldRowMenuGroupKey(null);
+    }
+
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [soldRowMenuGroupKey]);
+
   async function undoSaleRows(saleRows: SoldRow[]) {
     for (const row of saleRows) {
       await onUndoSale(row.position.id, row.sale.id);
@@ -785,15 +822,22 @@ function SoldPositionsDropdown({
     closeUndoPopover();
   }
 
-  function toggleUndoPopover(group: SoldGroup) {
+  function openUndoFromSoldMenu(group: SoldGroup) {
+    setSoldRowMenuGroupKey(null);
     if (group.rows.length <= 1) {
       void undoSaleRows(group.rows);
       return;
     }
+    setUndoPopoverGroupKey(group.groupKey);
+    setSelectedUndoSaleIds(group.rows.map((row) => row.sale.id));
+  }
 
-    const opening = undoPopoverGroupKey !== group.groupKey;
-    setUndoPopoverGroupKey(opening ? group.groupKey : null);
-    setSelectedUndoSaleIds(opening ? group.rows.map((row) => row.sale.id) : []);
+  function toggleSoldRowMenu(groupKey: string) {
+    setSoldRowMenuGroupKey((current) => {
+      if (current === groupKey) return null;
+      closeUndoPopover();
+      return groupKey;
+    });
   }
 
   function toggleUndoSale(saleId: string) {
@@ -903,31 +947,56 @@ function SoldPositionsDropdown({
                         {group.cashFlowUSD === 0 ? '—' : fmtUSDSigned(group.cashFlowUSD)}
                       </td>
                       <td className="px-3 py-2 text-right" onClick={(event) => event.stopPropagation()}>
-                        <div className="relative inline-flex items-center gap-1 text-left" data-undo-popover-root>
-                          <button
-                            type="button"
-                            disabled={hidingPosition}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void onHidePositions(uniquePositionIds);
-                            }}
-                            className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-amber-500/40 hover:text-amber-300 disabled:opacity-50"
-                            title={hasMultiple ? 'Hide closes in this row' : 'Hide close'}
-                          >
-                            {hidingPosition ? 'Hiding…' : 'Hide'}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={undoingSale}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              toggleUndoPopover(group);
-                            }}
-                            className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
-                            title={hasMultiple ? 'Choose closes to undo' : 'Undo sale'}
-                          >
-                            {undoingSale ? 'Undoing…' : 'Undo'}
-                          </button>
+                        <div className="relative inline-flex justify-end text-left" data-undo-popover-root>
+                          <div className="relative" data-sold-row-kebab-root>
+                            <button
+                              type="button"
+                              aria-label="Close row actions"
+                              aria-expanded={soldRowMenuGroupKey === group.groupKey}
+                              aria-haspopup="menu"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleSoldRowMenu(group.groupKey);
+                              }}
+                              className="-mr-1 flex h-8 w-8 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-800/70 hover:text-neutral-200"
+                            >
+                              <KebabIcon />
+                            </button>
+                            {soldRowMenuGroupKey === group.groupKey ? (
+                              <div
+                                role="menu"
+                                className="absolute right-0 top-full z-40 mt-1 min-w-[10rem] overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950 py-1 shadow-xl"
+                              >
+                                <button
+                                  role="menuitem"
+                                  type="button"
+                                  disabled={hidingPosition}
+                                  title={hasMultiple ? 'Hide closes in this row' : 'Hide close'}
+                                  className={rowActionsMenuItemClass}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setSoldRowMenuGroupKey(null);
+                                    void onHidePositions(uniquePositionIds);
+                                  }}
+                                >
+                                  {hidingPosition ? 'Hiding…' : 'Hide'}
+                                </button>
+                                <button
+                                  role="menuitem"
+                                  type="button"
+                                  disabled={undoingSale}
+                                  title={hasMultiple ? 'Choose closes to undo' : 'Undo sale'}
+                                  className={rowActionsMenuItemClass}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openUndoFromSoldMenu(group);
+                                  }}
+                                >
+                                  {undoingSale ? 'Undoing…' : 'Undo'}
+                                </button>
+                              </div>
+                            ) : null}
+                          </div>
                           {isPopoverOpen ? (
                             <div className="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
                               <div className="mb-2 flex items-start justify-between gap-3">
@@ -1079,6 +1148,31 @@ function HiddenPositionsDropdown({
   onRemove: (positionId: string) => Promise<unknown>;
   onRemoveAll: () => Promise<unknown>;
 }) {
+  const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
+  const [rowMenuPositionId, setRowMenuPositionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!bulkMenuOpen) return;
+    function handleMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest('[data-hidden-bulk-kebab-root]')) return;
+      setBulkMenuOpen(false);
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [bulkMenuOpen]);
+
+  useEffect(() => {
+    if (!rowMenuPositionId) return;
+    function handleMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest('[data-hidden-row-kebab-root]')) return;
+      setRowMenuPositionId(null);
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [rowMenuPositionId]);
+
   if (rows.length === 0) return null;
   const openCount = rows.filter((row) => !row.closed).length;
   const closedCount = rows.length - openCount;
@@ -1095,32 +1189,57 @@ function HiddenPositionsDropdown({
             {rows.length} position{rows.length === 1 ? '' : 's'} hidden · {openCount} open · {closedCount} closed
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
           {rows.length > 1 ? (
-            <>
+            <div className="relative" data-hidden-bulk-kebab-root>
               <button
                 type="button"
+                aria-label="Hidden list actions"
+                aria-expanded={bulkMenuOpen}
+                aria-haspopup="menu"
                 disabled={hidingPosition || removing}
                 onClick={(e) => {
                   e.stopPropagation();
-                  void onUnhideAll();
+                  setBulkMenuOpen((o) => !o);
                 }}
-                className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
+                className="-mr-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-800/70 hover:text-neutral-200 disabled:opacity-40"
               >
-                {hidingPosition ? 'Saving…' : 'Unhide all'}
+                <KebabIcon />
               </button>
-              <button
-                type="button"
-                disabled={hidingPosition || removing}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void onRemoveAll();
-                }}
-                className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-red-500/50 hover:text-red-300 disabled:opacity-50"
-              >
-                {removing ? 'Removing…' : 'Remove all'}
-              </button>
-            </>
+              {bulkMenuOpen ? (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full z-30 mt-1 min-w-[10rem] overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950 py-1 shadow-xl"
+                >
+                  <button
+                    role="menuitem"
+                    type="button"
+                    disabled={hidingPosition || removing}
+                    className={rowActionsMenuItemClass}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setBulkMenuOpen(false);
+                      void onUnhideAll();
+                    }}
+                  >
+                    {hidingPosition ? 'Saving…' : 'Unhide all'}
+                  </button>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    disabled={hidingPosition || removing}
+                    className={rowActionsMenuDangerClass}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setBulkMenuOpen(false);
+                      void onRemoveAll();
+                    }}
+                  >
+                    {removing ? 'Removing…' : 'Remove all'}
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ) : null}
           <span className={`text-sm text-neutral-500 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}>▶</span>
         </div>
@@ -1168,23 +1287,52 @@ function HiddenPositionsDropdown({
                       {row.closed ? 'Closed' : 'Open'}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="relative inline-flex justify-end" data-hidden-row-kebab-root>
                         <button
                           type="button"
-                          disabled={hidingPosition || removing}
-                          onClick={() => void onUnhide(row.position.id)}
-                          className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:opacity-50"
+                          aria-label={`Actions for ${row.position.symbol}`}
+                          aria-expanded={rowMenuPositionId === row.position.id}
+                          aria-haspopup="menu"
+                          onClick={() =>
+                            setRowMenuPositionId((id) =>
+                              id === row.position.id ? null : row.position.id,
+                            )
+                          }
+                          className="-mr-1 flex h-8 w-8 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-800/70 hover:text-neutral-200"
                         >
-                          {hidingPosition ? 'Saving…' : 'Unhide'}
+                          <KebabIcon />
                         </button>
-                        <button
-                          type="button"
-                          disabled={hidingPosition || removing}
-                          onClick={() => void onRemove(row.position.id)}
-                          className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-red-500/50 hover:text-red-300 disabled:opacity-50"
-                        >
-                          {removing ? 'Removing…' : 'Remove'}
-                        </button>
+                        {rowMenuPositionId === row.position.id ? (
+                          <div
+                            role="menu"
+                            className="absolute right-0 top-full z-30 mt-1 min-w-[9rem] overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950 py-1 shadow-xl"
+                          >
+                            <button
+                              role="menuitem"
+                              type="button"
+                              disabled={hidingPosition || removing}
+                              className={rowActionsMenuItemClass}
+                              onClick={() => {
+                                setRowMenuPositionId(null);
+                                void onUnhide(row.position.id);
+                              }}
+                            >
+                              {hidingPosition ? 'Saving…' : 'Unhide'}
+                            </button>
+                            <button
+                              role="menuitem"
+                              type="button"
+                              disabled={hidingPosition || removing}
+                              className={rowActionsMenuDangerClass}
+                              onClick={() => {
+                                setRowMenuPositionId(null);
+                                void onRemove(row.position.id);
+                              }}
+                            >
+                              {removing ? 'Removing…' : 'Remove'}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -1494,6 +1642,7 @@ export function PositionsTable({
   const [selectedHiddenLotIds, setSelectedHiddenLotIds] = useState<string[]>([]);
   const [removePopoverGroupKey, setRemovePopoverGroupKey] = useState<string | null>(null);
   const [selectedRemovalLotIds, setSelectedRemovalLotIds] = useState<string[]>([]);
+  const [activeRowActionsMenuKey, setActiveRowActionsMenuKey] = useState<string | null>(null);
   const [soldOpen, setSoldOpen] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [dayChangeMode, setDayChangeMode] = useState<'pct' | 'usd'>('pct');
@@ -1542,10 +1691,20 @@ export function PositionsTable({
   }
 
   function openSellForm(groupKey: string) {
+    setActiveRowActionsMenuKey(null);
     closeHidePopover();
     setRemovePopoverGroupKey(null);
     setSelectedRemovalLotIds([]);
     setSellingPositionId(groupKey);
+  }
+
+  function toggleRowActionsMenu(groupKey: string) {
+    setActiveRowActionsMenuKey((current) => {
+      if (current === groupKey) return null;
+      closeHidePopover();
+      closeRemovePopover();
+      return groupKey;
+    });
   }
 
   async function submitSaleForRow(
@@ -1594,16 +1753,15 @@ export function PositionsTable({
     closeHidePopover();
   }
 
-  function toggleHidePopover(row: ActivePositionRow) {
+  function openHidePopoverForRow(row: ActivePositionRow) {
+    setActiveRowActionsMenuKey(null);
     closeRemovePopover();
     if (row.lots.length <= 1) {
       void hideLots(row.lots);
       return;
     }
-
-    const opening = hidePopoverGroupKey !== row.groupKey;
-    setHidePopoverGroupKey(opening ? row.groupKey : null);
-    setSelectedHiddenLotIds(opening ? row.lots.map((lot) => lot.id) : []);
+    setHidePopoverGroupKey(row.groupKey);
+    setSelectedHiddenLotIds(row.lots.map((lot) => lot.id));
   }
 
   function toggleHiddenLot(lotId: string) {
@@ -1623,16 +1781,15 @@ export function PositionsTable({
     setSelectedRemovalLotIds([]);
   }
 
-  function toggleRemovePopover(row: ActivePositionRow) {
+  function openRemovePopoverForRow(row: ActivePositionRow) {
+    setActiveRowActionsMenuKey(null);
     closeHidePopover();
     if (row.lots.length <= 1) {
       void removeLots(row.lots);
       return;
     }
-
-    const opening = removePopoverGroupKey !== row.groupKey;
-    setRemovePopoverGroupKey(opening ? row.groupKey : null);
-    setSelectedRemovalLotIds(opening ? row.lots.map((lot) => lot.id) : []);
+    setRemovePopoverGroupKey(row.groupKey);
+    setSelectedRemovalLotIds(row.lots.map((lot) => lot.id));
   }
 
   function toggleRemovalLot(lotId: string) {
@@ -1663,7 +1820,9 @@ export function PositionsTable({
     if (!hidePopoverGroupKey) return;
 
     function handleMouseDown(event: MouseEvent) {
-      if (event.target instanceof Element && event.target.closest('[data-hide-popover-root]')) return;
+      if (!(event.target instanceof Element)) return;
+      const root = event.target.closest('[data-position-actions-root]');
+      if (root?.getAttribute('data-actions-group-key') === hidePopoverGroupKey) return;
       closeHidePopover();
     }
 
@@ -1675,13 +1834,28 @@ export function PositionsTable({
     if (!removePopoverGroupKey) return;
 
     function handleMouseDown(event: MouseEvent) {
-      if (event.target instanceof Element && event.target.closest('[data-remove-popover-root]')) return;
+      if (!(event.target instanceof Element)) return;
+      const root = event.target.closest('[data-position-actions-root]');
+      if (root?.getAttribute('data-actions-group-key') === removePopoverGroupKey) return;
       closeRemovePopover();
     }
 
     document.addEventListener('mousedown', handleMouseDown);
     return () => document.removeEventListener('mousedown', handleMouseDown);
   }, [removePopoverGroupKey]);
+
+  useEffect(() => {
+    if (!activeRowActionsMenuKey) return;
+
+    function handleMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest('[data-row-kebab-menu-root]')) return;
+      setActiveRowActionsMenuKey(null);
+    }
+
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [activeRowActionsMenuKey]);
 
   if (!loading && enriched.length === 0 && hiddenRows.length === 0) {
     return (
@@ -1812,28 +1986,75 @@ export function PositionsTable({
                       {p.error ? '—' : fmtPct(p.totalGainPct)}
                     </td>
                     <td className="px-3 py-2 text-right" onClick={(event) => event.stopPropagation()}>
-                      <div className="inline-flex items-center gap-1 text-left">
-                        <button
-                          type="button"
-                          onClick={() => openSellForm(p.groupKey)}
-                          disabled={selling || removing || Math.abs(p.shares) <= SHARE_EPSILON}
-                          title={isShort ? 'Record cover' : 'Record sale'}
-                          className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-emerald-500/40 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {isShort ? 'Cover' : 'Sell'}
-                        </button>
-                        <div className="relative inline-block" data-hide-popover-root>
+                      <div
+                        className="relative inline-flex justify-end"
+                        data-position-actions-root
+                        data-actions-group-key={p.groupKey}
+                      >
+                        <div className="relative" data-row-kebab-menu-root>
                           <button
                             type="button"
-                            onClick={() => toggleHidePopover(p)}
-                            disabled={hidingPosition}
-                            title={p.lots.length > 1 ? 'Choose positions to hide' : 'Hide position'}
-                            className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-amber-500/40 hover:text-amber-300 disabled:opacity-40"
+                            aria-label="Position actions"
+                            aria-expanded={activeRowActionsMenuKey === p.groupKey}
+                            aria-haspopup="menu"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleRowActionsMenu(p.groupKey);
+                            }}
+                            className="-mr-1 flex h-8 w-8 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-800/70 hover:text-neutral-200"
                           >
-                            {hidingPosition ? 'Hiding…' : 'Hide'}
+                            <KebabIcon />
                           </button>
-                          {hidePopoverGroupKey === p.groupKey ? (
-                            <div className="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
+                          {activeRowActionsMenuKey === p.groupKey ? (
+                            <div
+                              role="menu"
+                              className="absolute right-0 top-full z-40 mt-1 min-w-[10.5rem] overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950 py-1 shadow-xl"
+                            >
+                              <button
+                                role="menuitem"
+                                type="button"
+                                disabled={selling || removing || Math.abs(p.shares) <= SHARE_EPSILON}
+                                title={isShort ? 'Record cover' : 'Record sale'}
+                                className={rowActionsMenuItemClass}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openSellForm(p.groupKey);
+                                }}
+                              >
+                                {isShort ? 'Cover' : 'Sell'}
+                              </button>
+                              <div className="mx-2 h-px bg-neutral-800/90" />
+                              <button
+                                role="menuitem"
+                                type="button"
+                                disabled={hidingPosition}
+                                title={p.lots.length > 1 ? 'Choose positions to hide' : 'Hide position'}
+                                className={rowActionsMenuItemClass}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openHidePopoverForRow(p);
+                                }}
+                              >
+                                {hidingPosition ? 'Hiding…' : 'Hide'}
+                              </button>
+                              <button
+                                role="menuitem"
+                                type="button"
+                                disabled={removing}
+                                title={p.lots.length > 1 ? 'Choose positions to remove' : 'Remove position'}
+                                className={rowActionsMenuDangerClass}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openRemovePopoverForRow(p);
+                                }}
+                              >
+                                {removing ? 'Removing…' : 'Remove'}
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                        {hidePopoverGroupKey === p.groupKey ? (
+                          <div className="absolute right-0 top-full z-[45] mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
                               <div className="mb-2 flex items-start justify-between gap-3">
                                 <div>
                                   <div className="text-xs font-medium text-neutral-300">Hide positions</div>
@@ -1890,19 +2111,8 @@ export function PositionsTable({
                               </div>
                             </div>
                           ) : null}
-                        </div>
-                        <div className="relative inline-block" data-remove-popover-root>
-                          <button
-                            type="button"
-                            onClick={() => toggleRemovePopover(p)}
-                            disabled={removing}
-                            title={p.lots.length > 1 ? 'Choose positions to remove' : 'Remove position'}
-                            className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 transition hover:border-red-500/50 hover:text-red-400 disabled:opacity-40"
-                          >
-                            Remove
-                          </button>
-                          {removePopoverGroupKey === p.groupKey ? (
-                            <div className="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
+                        {removePopoverGroupKey === p.groupKey ? (
+                          <div className="absolute right-0 top-full z-[45] mt-2 w-72 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left shadow-xl">
                               <div className="mb-2 flex items-start justify-between gap-3">
                                 <div>
                                   <div className="text-xs font-medium text-neutral-300">Remove positions</div>
@@ -1959,7 +2169,6 @@ export function PositionsTable({
                               </div>
                             </div>
                           ) : null}
-                        </div>
                       </div>
                     </td>
                   </tr>

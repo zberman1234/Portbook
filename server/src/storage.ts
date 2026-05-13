@@ -14,6 +14,10 @@ export interface PositionSale {
   saleDate: string; // YYYY-MM-DD
   shares: number;
   salePriceUSD?: number;
+  // When true, proceeds are treated as cash that left the portfolio (TWR
+  // counts it as an external withdrawal; funding model doesn't lend it to
+  // subsequent buys). When false/undefined, proceeds remain as portfolio cash.
+  cashWithdrawn?: boolean;
   createdAt: string; // ISO timestamp
 }
 

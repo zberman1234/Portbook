@@ -8,13 +8,30 @@ const yahooFinance = new YahooFinance({
 
 const quoteCache = new LRUCache<string, QuoteSnapshot[]>({
   max: 200,
-  ttl: 1000 * 60 * 10,
+  ttl: 1000 * 60,
 });
 
-const historyCache = new LRUCache<string, ChartQuote[]>({
-  max: 500,
-  ttl: 1000 * 60 * 60 * 24,
-});
+export type ChartInterval = '5m' | '30m' | '1d' | '1wk';
+
+function isIntradayInterval(interval: ChartInterval): boolean {
+  return interval === '5m' || interval === '30m';
+}
+
+// Per-interval cache TTLs match how often Yahoo's bars actually move,
+// so a browser refresh past the TTL fetches fresh data instead of stale cache.
+const HISTORY_TTLS: Record<ChartInterval, number> = {
+  '5m': 1000 * 60,
+  '30m': 1000 * 60 * 5,
+  '1d': 1000 * 60 * 60,
+  '1wk': 1000 * 60 * 60 * 24,
+};
+
+const historyCaches: Record<ChartInterval, LRUCache<string, ChartQuote[]>> = {
+  '5m': new LRUCache({ max: 500, ttl: HISTORY_TTLS['5m'] }),
+  '30m': new LRUCache({ max: 500, ttl: HISTORY_TTLS['30m'] }),
+  '1d': new LRUCache({ max: 500, ttl: HISTORY_TTLS['1d'] }),
+  '1wk': new LRUCache({ max: 500, ttl: HISTORY_TTLS['1wk'] }),
+};
 
 const fxCache = new LRUCache<string, number>({
   max: 500,
@@ -92,28 +109,38 @@ export async function getQuotes(symbols: string[]): Promise<QuoteSnapshot[]> {
   return snapshots;
 }
 
-export async function getChart(symbol: string, from: Date, to: Date): Promise<ChartQuote[]> {
-  const fromISO = from.toISOString().slice(0, 10);
-  const toISO = to.toISOString().slice(0, 10);
-  const key = `${symbol}|${fromISO}|${toISO}`;
-  const cached = historyCache.get(key);
+export async function getChart(
+  symbol: string,
+  from: Date,
+  to: Date,
+  interval: ChartInterval = '1d',
+): Promise<ChartQuote[]> {
+  const intraday = isIntradayInterval(interval);
+  // For intraday cache keys we round to minutes so jitter in `to` (live "now")
+  // still hits the cache within the TTL window.
+  const fromKey = intraday ? from.toISOString().slice(0, 16) : from.toISOString().slice(0, 10);
+  const toKey = intraday ? to.toISOString().slice(0, 16) : to.toISOString().slice(0, 10);
+  const cache = historyCaches[interval];
+  const key = `${symbol}|${fromKey}|${toKey}`;
+  const cached = cache.get(key);
   if (cached) return cached;
 
   const res = await yahooFinance.chart(symbol, {
     period1: from,
     period2: to,
-    interval: '1d',
+    interval,
   });
 
-  const rows: ChartQuote[] = (res.quotes ?? []).map((q) => ({
-    date: (q.date instanceof Date ? q.date : new Date(q.date as unknown as string))
-      .toISOString()
-      .slice(0, 10),
-    close: typeof q.close === 'number' ? q.close : null,
-    adjclose: typeof q.adjclose === 'number' ? q.adjclose : null,
-  }));
+  const rows: ChartQuote[] = (res.quotes ?? []).map((q) => {
+    const d = q.date instanceof Date ? q.date : new Date(q.date as unknown as string);
+    return {
+      date: intraday ? d.toISOString() : d.toISOString().slice(0, 10),
+      close: typeof q.close === 'number' ? q.close : null,
+      adjclose: typeof q.adjclose === 'number' ? q.adjclose : null,
+    };
+  });
 
-  historyCache.set(key, rows);
+  cache.set(key, rows);
   return rows;
 }
 

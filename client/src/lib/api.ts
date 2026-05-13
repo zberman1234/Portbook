@@ -75,6 +75,7 @@ export const api = {
       saleDate: string;
       shares: number;
       salePriceUSD?: number;
+      cashWithdrawn?: boolean;
     },
   ) =>
     http<{ sale: PositionSale; portfolios: Portfolio[] }>(
@@ -98,9 +99,10 @@ export const api = {
       `/api/quote?symbols=${encodeURIComponent(symbols.join(','))}`,
     ),
 
-  history: (symbol: string, from: string, to?: string) => {
+  history: (symbol: string, from: string, to?: string, interval?: string) => {
     const params = new URLSearchParams({ symbol, from });
     if (to) params.set('to', to);
+    if (interval) params.set('interval', interval);
     return http<HistoryRow[]>(`/api/history?${params.toString()}`);
   },
 

@@ -3,6 +3,7 @@ export interface PositionSale {
   saleDate: string;
   shares: number;
   salePriceUSD?: number;
+  cashWithdrawn?: boolean;
   createdAt: string;
 }
 

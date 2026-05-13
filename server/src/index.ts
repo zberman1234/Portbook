@@ -8,6 +8,7 @@ import {
   closestTradingClose,
   getFxRate,
   normalizeCurrency,
+  type ChartInterval,
 } from './yahoo.js';
 import {
   loadPortfolios,
@@ -351,6 +352,7 @@ app.post('/api/portfolios/:portfolioId/positions/:positionId/sales', async (req,
       saleDate,
       shares: rawShares,
       salePriceUSD: rawSalePriceUSD,
+      cashWithdrawn: rawCashWithdrawn,
     } = req.body as Partial<PositionSale>;
 
     if (!isISODate(saleDate)) {
@@ -412,6 +414,7 @@ app.post('/api/portfolios/:portfolioId/positions/:positionId/sales', async (req,
       saleDate,
       shares,
       salePriceUSD,
+      cashWithdrawn: rawCashWithdrawn === true,
       createdAt: new Date().toISOString(),
     };
 
@@ -536,18 +539,29 @@ app.get('/api/quote', async (req, res, next) => {
   }
 });
 
+const ALLOWED_INTERVALS: readonly ChartInterval[] = ['5m', '30m', '1d', '1wk'] as const;
+
+function parseInterval(raw: unknown): ChartInterval {
+  const s = String(raw ?? '').trim();
+  return (ALLOWED_INTERVALS as readonly string[]).includes(s) ? (s as ChartInterval) : '1d';
+}
+
 app.get('/api/history', async (req, res, next) => {
   try {
     const symbol = String(req.query.symbol ?? '').trim();
     const from = String(req.query.from ?? '').trim();
     const to = String(req.query.to ?? '').trim();
+    const interval = parseInterval(req.query.interval);
     if (!symbol) {
       res.status(400).json({ error: 'symbol required' });
       return;
     }
     const fromDate = from ? new Date(`${from}T00:00:00Z`) : new Date(Date.now() - 365 * 24 * 3600 * 1000);
-    const toDate = to ? new Date(`${to}T00:00:00Z`) : new Date();
-    const rows = await getChart(symbol, fromDate, toDate);
+    // End-of-day so the requested calendar day is fully included. With T00:00Z
+    // the upper bound was 8pm ET the day before, which excluded today's
+    // intraday bars from 5m/30m fetches.
+    const toDate = to ? new Date(`${to}T23:59:59Z`) : new Date();
+    const rows = await getChart(symbol, fromDate, toDate, interval);
     res.json(rows);
   } catch (err) {
     next(err);

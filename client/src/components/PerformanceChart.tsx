@@ -28,7 +28,18 @@ interface Props {
   };
 }
 
-type ChartRow = { date: string; value: number; cost: number;[key: string]: number | string };
+// `flow` = cumulative external cash flow into the portfolio at this row:
+// + new-position cost basis on activation, − withdrawn sale proceeds on
+// withdrawal. Used as the TWR cash-flow proxy. `cost` is gross cost basis
+// (constant once activated, ignores withdrawals) and is what the Balance-mode
+// reference line / dollar-gain math uses.
+type ChartRow = {
+  date: string;
+  value: number;
+  cost: number;
+  flow: number;
+  [key: string]: number | string;
+};
 
 type DateSelection = {
   startDate: string;
@@ -36,6 +47,8 @@ type DateSelection = {
 };
 
 type TimeWindowKey = '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | '2Y' | '5Y' | 'ALL';
+
+type ChartInterval = '5m' | '30m' | '1d' | '1wk';
 
 const TIME_WINDOWS: { key: TimeWindowKey; label: string }[] = [
   { key: '1D', label: '1D' },
@@ -51,12 +64,108 @@ const TIME_WINDOWS: { key: TimeWindowKey; label: string }[] = [
 
 const DEFAULT_PERFORMANCE_WINDOW: TimeWindowKey = 'ALL';
 
+type ChartMode = 'twr' | 'balance';
+const DEFAULT_CHART_MODE: ChartMode = 'twr';
+
+const CHART_MODES: { key: ChartMode; label: string }[] = [
+  { key: 'twr', label: 'TWR' },
+  { key: 'balance', label: 'Balance' },
+];
+
+function intervalForWindow(w: TimeWindowKey): ChartInterval {
+  switch (w) {
+    case '1D':
+      return '5m';
+    case '1W':
+      return '30m';
+    case '1M':
+    case '3M':
+    case '6M':
+      return '1d';
+    case '1Y':
+    case '2Y':
+    case '5Y':
+    case 'ALL':
+      return '1wk';
+  }
+}
+
+// Yahoo caps 5m at ~7 days and 30m at ~60 days; for short windows we fetch
+// only the recent slice we'll display (with a small cushion for weekends).
+function historyFromForWindow(
+  w: TimeWindowKey,
+  purchaseDate: string,
+  today: string,
+): string {
+  switch (w) {
+    case '1D':
+      return shiftDateISO(today, -4, 'day');
+    case '1W':
+      return shiftDateISO(today, -14, 'day');
+    default:
+      return purchaseDate;
+  }
+}
+
+// React Query staleTime per interval — mirror the server's HISTORY_TTLS.
+function staleTimeForInterval(interval: ChartInterval): number {
+  switch (interval) {
+    case '5m':
+      return 1000 * 60;
+    case '30m':
+      return 1000 * 60 * 5;
+    case '1d':
+      return 1000 * 60 * 60;
+    case '1wk':
+      return 1000 * 60 * 60 * 24;
+  }
+}
+
+function dateKey(s: string): string {
+  return s.slice(0, 10);
+}
+
+function formatTickLabel(s: string, interval: ChartInterval): string {
+  if (interval === '5m') {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return s;
+    return d.toLocaleString([], {
+      weekday: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    });
+  }
+  if (interval === '30m') {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return s;
+    return d.toLocaleString([], {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    });
+  }
+  return s.slice(0, 10);
+}
+
 const BENCHMARKS: { symbol: string; label: string; color: string }[] = [
   { symbol: 'SPY', label: 'S&P 500 (SPY)', color: '#60a5fa' },
   { symbol: 'SMH', label: 'SMH', color: '#f59e0b' },
 ];
 
-const TRADING_DAYS = 252;
+// Periods per year by bar interval — used to annualize per-period returns into
+// Sharpe. 5m/30m use the ~6.5-hour US regular session (78 / 13 bars per day).
+function periodsPerYear(interval: ChartInterval): number {
+  switch (interval) {
+    case '5m': return 252 * 78;
+    case '30m': return 252 * 13;
+    case '1d': return 252;
+    case '1wk': return 52;
+  }
+}
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -94,6 +203,12 @@ function windowStartDate(windowKey: TimeWindowKey, today: string): string | null
 }
 
 function visibleRowsForWindow(rows: ChartRow[], windowKey: TimeWindowKey, today: string): ChartRow[] {
+  // For 1D we fetched a multi-day buffer (covers weekends/holidays); show only
+  // the bars from the most recent trading day that actually has data.
+  if (windowKey === '1D' && rows.length > 0) {
+    const lastDate = rows[rows.length - 1].date.slice(0, 10);
+    return rows.filter((r) => r.date.slice(0, 10) === lastDate);
+  }
   const startDate = windowStartDate(windowKey, today);
   if (!startDate) return rows;
   const windowRows = rows.filter((row) => row.date >= startDate);
@@ -132,7 +247,7 @@ function firstPriceOnOrAfter(
   return null;
 }
 
-function annualizedSharpe(dailyReturns: number[]): number | null {
+function annualizedSharpe(dailyReturns: number[], interval: ChartInterval): number | null {
   if (dailyReturns.length < 2) return null;
   const n = dailyReturns.length;
   const mean = dailyReturns.reduce((s, x) => s + x, 0) / n;
@@ -140,7 +255,7 @@ function annualizedSharpe(dailyReturns: number[]): number | null {
     dailyReturns.reduce((s, x) => s + (x - mean) * (x - mean), 0) / (n - 1);
   const std = Math.sqrt(variance);
   if (!Number.isFinite(std) || std === 0) return null;
-  return (mean / std) * Math.sqrt(TRADING_DAYS);
+  return (mean / std) * Math.sqrt(periodsPerYear(interval));
 }
 
 function performanceValueFromSignedExposure(value: number, cost: number, grossCost: number): number {
@@ -178,12 +293,86 @@ function rangeReturn(rows: ChartRow[], key: string, startDate: string, endDate: 
   };
 }
 
+// Pick the row field to treat as the external cash flow for a given series.
+// Portfolio uses `flow` (deposits − withdrawn sale proceeds). Benchmarks hold
+// SPY/SMH bought at each purchase date and never sell — withdrawals don't
+// affect them — so they use `cost` (activation deposits only).
+function flowKeyFor(key: string): 'flow' | 'cost' {
+  return key === 'value' ? 'flow' : 'cost';
+}
+
+// Daily-Valuation TWR: chain (1 + period_return) where period_return treats the
+// row-to-row change in the series-specific flow field as an external cash flow
+// that doesn't count as return. Cash flow assumed at start of period.
+function twrRangeReturn(rows: ChartRow[], key: string, startDate: string, endDate: string) {
+  const windowRows = rows.filter(
+    (row) => row.date >= startDate && row.date <= endDate && typeof row[key] === 'number',
+  );
+  if (windowRows.length < 2) return null;
+  const start = windowRows[0];
+  const end = windowRows[windowRows.length - 1];
+  const startValue = start[key];
+  const endValue = end[key];
+  if (typeof startValue !== 'number' || typeof endValue !== 'number') return null;
+
+  const fk = flowKeyFor(key);
+  let twr = 1;
+  for (let i = 1; i < windowRows.length; i++) {
+    const prev = windowRows[i - 1];
+    const cur = windowRows[i];
+    const prevV = prev[key];
+    const curV = cur[key];
+    if (typeof prevV !== 'number' || typeof curV !== 'number') continue;
+    const cashFlow = (cur[fk] ?? 0) - (prev[fk] ?? 0);
+    const denom = prevV + cashFlow;
+    if (denom <= 0) continue;
+    twr *= 1 + (curV - denom) / denom;
+  }
+
+  const pct = twr - 1;
+  const netFlow = (end[fk] ?? 0) - (start[fk] ?? 0);
+  const gain = endValue - startValue - netFlow;
+  return { gain, pct, startValue, endValue };
+}
+
+// Transform a chart slice into a TWR series indexed from the window's start (0%).
+// Each key gets its own series-specific flow term (portfolio = flow, benchmarks
+// = cost), so a withdrawal on the portfolio side doesn't distort SPY/SMH.
+function toTwrSeries(rows: ChartRow[], keys: string[]): ChartRow[] {
+  if (rows.length === 0) return [];
+  const twr: Record<string, number> = {};
+  for (const k of keys) twr[k] = 1;
+  const out: ChartRow[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (i > 0) {
+      const prev = rows[i - 1];
+      const cur = rows[i];
+      for (const k of keys) {
+        const prevV = prev[k];
+        const curV = cur[k];
+        if (typeof prevV !== 'number' || typeof curV !== 'number') continue;
+        const fk = flowKeyFor(k);
+        const cashFlow = (cur[fk] ?? 0) - (prev[fk] ?? 0);
+        const denom = prevV + cashFlow;
+        if (denom <= 0) continue;
+        twr[k] *= 1 + (curV - denom) / denom;
+      }
+    }
+    const row: ChartRow = { date: rows[i].date, value: 0, cost: 0, flow: 0 };
+    for (const k of keys) {
+      if (typeof rows[i][k] === 'number') row[k] = twr[k] - 1;
+    }
+    out.push(row);
+  }
+  return out;
+}
+
 function dailyReturnsFromSeries(series: ChartRow[], key: string): number[] {
   const out: number[] = [];
   for (let i = 1; i < series.length; i++) {
     const prev = series[i - 1];
     const cur = series[i];
-    if (cur.cost !== prev.cost) continue;
+    if (cur.cost !== prev.cost || cur.flow !== prev.flow) continue;
     const a = cur[key];
     const b = prev[key];
     if (typeof a !== 'number' || typeof b !== 'number' || b === 0) continue;
@@ -200,14 +389,15 @@ function formatDateRange(startDate: string | null, endDate: string | null): stri
     year: 'numeric',
     timeZone: 'UTC',
   });
-  return `${formatter.format(new Date(`${startDate}T00:00:00Z`))}–${formatter.format(
-    new Date(`${endDate}T00:00:00Z`),
+  return `${formatter.format(new Date(`${startDate.slice(0, 10)}T00:00:00Z`))}–${formatter.format(
+    new Date(`${endDate.slice(0, 10)}T00:00:00Z`),
   )}`;
 }
 
 export function PerformanceChart({ positions, portfolioReturn }: Props) {
   const today = todayISO();
   const [selectedWindow, setSelectedWindow] = useState<TimeWindowKey>(DEFAULT_PERFORMANCE_WINDOW);
+  const [chartMode, setChartMode] = useState<ChartMode>(DEFAULT_CHART_MODE);
   const [dragStartDate, setDragStartDate] = useState<string | null>(null);
   const [dragEndDate, setDragEndDate] = useState<string | null>(null);
   const [selectedRange, setSelectedRange] = useState<DateSelection | null>(null);
@@ -221,6 +411,9 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
   }, [positions, today]);
 
   const symbols = useMemo(() => positions.map((p) => p.symbol), [positions]);
+
+  const interval = intervalForWindow(selectedWindow);
+  const historyStaleTime = staleTimeForInterval(interval);
 
   const quotesQuery = useQuery({
     queryKey: ['quote', [...symbols].sort().join(',')],
@@ -244,23 +437,31 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
   );
 
   const historyQueries = useQueries({
-    queries: positions.map((p) => ({
-      queryKey: ['history', p.symbol, p.purchaseDate],
-      queryFn: () => api.history(p.symbol, p.purchaseDate, today),
-      staleTime: 1000 * 60 * 60,
-    })),
+    queries: positions.map((p) => {
+      const from = historyFromForWindow(selectedWindow, p.purchaseDate, today);
+      return {
+        queryKey: ['history', p.symbol, from, interval],
+        queryFn: () => api.history(p.symbol, from, today, interval),
+        staleTime: historyStaleTime,
+      };
+    }),
   });
 
+  // FX rates are kept at daily granularity regardless of window — intraday FX
+  // jitter doesn't meaningfully affect the chart, and daily keys merge cleanly
+  // with intraday stock timestamps via dateKey(). The from-date matches the
+  // stock window so short views don't drag in years of FX data.
   const fxSeriesQueries = useQueries({
     queries: positions.map((p, i) => {
       const cur = effectiveCurrencies[i];
       const cu = cur.toUpperCase();
+      const fxFrom = historyFromForWindow(selectedWindow, p.purchaseDate, today);
       return {
-        queryKey: ['history', `${cu}USD=X`, p.purchaseDate],
+        queryKey: ['history', `${cu}USD=X`, fxFrom, '1d'],
         queryFn: () => {
           if (cu === 'USD') return Promise.resolve([]);
           const pair = `${cu}USD=X`;
-          return api.history(pair, p.purchaseDate, today);
+          return api.history(pair, fxFrom, today, '1d');
         },
         staleTime: 1000 * 60 * 60,
       };
@@ -283,17 +484,19 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
     })),
   });
 
+  const benchmarkFrom = historyFromForWindow(selectedWindow, earliest, today);
+
   const spyHistoryQuery = useQuery({
-    queryKey: ['history', 'SPY', earliest],
-    queryFn: () => api.history('SPY', earliest, today),
-    staleTime: 1000 * 60 * 60,
+    queryKey: ['history', 'SPY', benchmarkFrom, interval],
+    queryFn: () => api.history('SPY', benchmarkFrom, today, interval),
+    staleTime: historyStaleTime,
     enabled: positions.length > 0,
   });
 
   const smhHistoryQuery = useQuery({
-    queryKey: ['history', 'SMH', earliest],
-    queryFn: () => api.history('SMH', earliest, today),
-    staleTime: 1000 * 60 * 60,
+    queryKey: ['history', 'SMH', benchmarkFrom, interval],
+    queryFn: () => api.history('SMH', benchmarkFrom, today, interval),
+    staleTime: historyStaleTime,
     enabled: positions.length > 0,
   });
 
@@ -313,7 +516,26 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
     });
     const allDates = Array.from(datesSet).sort();
 
-    type Snap = { costBasisUSD: number; usdByDate: Map<string, number> };
+    // Activate each position at the midpoint of its bars on purchaseDate so the
+    // cost-basis injection lands at the local midday of the position's exchange
+    // (NYSE ≈ 17:30 UTC, Tokyo ≈ 03:00 UTC, etc.) instead of UTC midnight.
+    // Daily/weekly intervals naturally collapse to the purchaseDate bar.
+    const activationByPosition: string[] = positions.map((p, i) => {
+      const history = historyQueries[i]?.data ?? [];
+      const dayBars = history
+        .filter((r) => r.date.startsWith(p.purchaseDate))
+        .map((r) => r.date)
+        .sort();
+      return dayBars.length > 0
+        ? dayBars[Math.floor(dayBars.length / 2)]
+        : `${p.purchaseDate}T12:00:00.000Z`;
+    });
+
+    type Snap = {
+      costBasisUSD: number;
+      usdByDate: Map<string, number>;
+      withdrawnByDate: Map<string, number>;
+    };
 
     const snaps: (Snap | null)[] = positions.map((p, i) => {
       const buyClose = buyCloseQueries[i]?.data;
@@ -344,34 +566,41 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
       } else {
         fxHistory.forEach((r) => {
           const v = r.adjclose ?? r.close;
-          if (v !== null) fxByDate.set(r.date, v);
+          if (v !== null) fxByDate.set(dateKey(r.date), v);
         });
       }
 
       const usdByDate = new Map<string, number>();
+      const withdrawnByDate = new Map<string, number>();
       const sales = (p.sales ?? []).slice().sort((a, b) => a.saleDate.localeCompare(b.saleDate));
       let lastFx = buyFxRate ?? null;
       history.forEach((r) => {
         const closeNative = normalizeNative(r.adjclose ?? r.close, effectiveCurrency);
         if (closeNative === null) return;
         if (!isUsd) {
-          const fxOnDay = fxByDate.get(r.date);
+          const fxOnDay = fxByDate.get(dateKey(r.date));
           if (typeof fxOnDay === 'number') lastFx = fxOnDay;
         }
         if (lastFx === null) return;
         const priceUSD = closeNative * lastFx;
-        const soldShares = sales
-          .filter((sale) => sale.saleDate <= r.date)
-          .reduce((sum, sale) => sum + sale.shares, 0);
-        const saleCash = sales
-          .filter((sale) => sale.saleDate <= r.date)
+        const completedSales = sales.filter((sale) => sale.saleDate <= dateKey(r.date));
+        const soldShares = completedSales.reduce((sum, sale) => sum + sale.shares, 0);
+        // Retained sale proceeds stay inside the portfolio's market value;
+        // withdrawn proceeds are tracked separately as external cash flows for
+        // TWR (the value below intentionally excludes them).
+        const retainedSaleCash = completedSales
+          .filter((sale) => !sale.cashWithdrawn)
+          .reduce((sum, sale) => sum + closingCashFlowUSD(p, sale), 0);
+        const withdrawnSaleCash = completedSales
+          .filter((sale) => sale.cashWithdrawn)
           .reduce((sum, sale) => sum + closingCashFlowUSD(p, sale), 0);
         const openSharesAbs = Math.max(0, Math.abs(lot.shares) - soldShares);
         const openShares = Math.sign(lot.shares) * openSharesAbs;
-        usdByDate.set(r.date, priceUSD * openShares + saleCash);
+        usdByDate.set(r.date, priceUSD * openShares + retainedSaleCash);
+        withdrawnByDate.set(r.date, withdrawnSaleCash);
       });
 
-      return { costBasisUSD: lot.costBasisUSD, usdByDate };
+      return { costBasisUSD: lot.costBasisUSD, usdByDate, withdrawnByDate };
     });
 
     const costBasisByPosition = positions.map((p, i) => snaps[i]?.costBasisUSD ?? costBasisUSD(p));
@@ -391,18 +620,20 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
 
     const rows: ChartRow[] = [];
     const prevPerSymbol = new Array<number | null>(positions.length).fill(null);
+    const prevWithdrawnPerSymbol = new Array<number>(positions.length).fill(0);
     const benchLastPrice: (number | null)[] = benchmarkQueries.map(() => null);
     for (const d of allDates) {
       let value = 0;
       let cost = 0;
       let grossCost = 0;
+      let flow = 0;
       for (let i = 0; i < positions.length; i++) {
-        const p = positions[i];
-        const active = p.purchaseDate <= d;
+        const active = activationByPosition[i] <= d;
         if (!active) continue;
         const positionCost = costBasisByPosition[i];
         cost += positionCost;
         grossCost += Math.abs(positionCost);
+        flow += positionCost; // activation contributes cost basis as a deposit
         const snap = snaps[i];
         if (!snap) continue;
         const v = snap.usdByDate.get(d);
@@ -413,6 +644,9 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
           const previousValue = prevPerSymbol[i];
           if (previousValue !== null) value += previousValue;
         }
+        const w = snap.withdrawnByDate.get(d);
+        if (typeof w === 'number') prevWithdrawnPerSymbol[i] = w;
+        flow -= prevWithdrawnPerSymbol[i];
       }
       if (grossCost <= 0) continue;
 
@@ -420,6 +654,7 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
         date: d,
         value: performanceValueFromSignedExposure(value, cost, grossCost),
         cost: grossCost,
+        flow,
       };
 
       benchSnaps.forEach((bs, bi) => {
@@ -430,8 +665,7 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
         let bval = 0;
         let any = false;
         for (let i = 0; i < positions.length; i++) {
-          const p = positions[i];
-          if (p.purchaseDate > d) continue;
+          if (activationByPosition[i] > d) continue;
           const sh = bs.sharesPerPosition[i];
           if (sh === null) continue;
           bval += sh * price;
@@ -465,55 +699,66 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
       {
         label: 'Portfolio',
         color: '#10b981',
-        sharpe: annualizedSharpe(dailyReturnsFromSeries(rows, 'value')),
+        sharpe: annualizedSharpe(dailyReturnsFromSeries(rows, 'value'), interval),
         ret: portfolioReturn ?? totalReturn('value'),
       },
       ...BENCHMARKS.map((b) => ({
         label: b.label,
         color: b.color,
-        sharpe: annualizedSharpe(dailyReturnsFromSeries(rows, b.symbol)),
+        sharpe: annualizedSharpe(dailyReturnsFromSeries(rows, b.symbol), interval),
         ret: totalReturn(b.symbol),
       })),
     ];
 
     return { chartData: rows, stats };
-  }, [positions, portfolioReturn, effectiveCurrencies, historyQueries, fxSeriesQueries, buyCloseQueries, buyFxQueries, spyHistoryQuery.data, smhHistoryQuery.data]);
+  }, [positions, portfolioReturn, effectiveCurrencies, historyQueries, fxSeriesQueries, buyCloseQueries, buyFxQueries, spyHistoryQuery.data, smhHistoryQuery.data, interval]);
 
   const visibleChartData = useMemo(
     () => visibleRowsForWindow(chartData, selectedWindow, today),
     [chartData, selectedWindow, today],
   );
 
-  const chartDataForPlot = selectedRange !== null ? chartData : visibleChartData;
+  const balanceChartDataForPlot = selectedRange !== null ? chartData : visibleChartData;
+
+  const twrKeys = useMemo(() => ['value', ...BENCHMARKS.map((b) => b.symbol)], []);
+
+  const chartDataForPlot = useMemo(() => {
+    if (chartMode === 'balance') return balanceChartDataForPlot;
+    return toTwrSeries(balanceChartDataForPlot, twrKeys);
+  }, [chartMode, balanceChartDataForPlot, twrKeys]);
 
   const displayStats = useMemo(() => {
-    if (selectedRange !== null || selectedWindow === 'ALL') return stats;
-    const slice = visibleChartData;
+    const slice =
+      selectedRange !== null
+        ? chartData.filter((r) => r.date >= selectedRange.startDate && r.date <= selectedRange.endDate)
+        : selectedWindow === 'ALL'
+          ? chartData
+          : visibleChartData;
     if (slice.length === 0) return stats;
-    const start = slice[0].date;
-    const end = slice[slice.length - 1].date;
-    type Stat = {
-      label: string;
-      color: string;
-      sharpe: number | null;
-      ret: { gain: number; pct: number; endValue: number } | null;
-    };
-    const windowed: Stat[] = [
+    const startDate = slice[0].date;
+    const endDate = slice[slice.length - 1].date;
+    const returnFor = (key: string) =>
+      chartMode === 'twr'
+        ? twrRangeReturn(chartData, key, startDate, endDate)
+        : rangeReturn(chartData, key, startDate, endDate);
+    return [
       {
         label: 'Portfolio',
         color: '#10b981',
-        sharpe: annualizedSharpe(dailyReturnsFromSeries(slice, 'value')),
-        ret: rangeReturn(chartData, 'value', start, end),
+        sharpe: annualizedSharpe(dailyReturnsFromSeries(slice, 'value'), interval),
+        ret:
+          chartMode === 'balance' && selectedRange === null && selectedWindow === 'ALL' && portfolioReturn
+            ? portfolioReturn
+            : returnFor('value'),
       },
       ...BENCHMARKS.map((b) => ({
         label: b.label,
         color: b.color,
-        sharpe: annualizedSharpe(dailyReturnsFromSeries(slice, b.symbol)),
-        ret: rangeReturn(chartData, b.symbol, start, end),
+        sharpe: annualizedSharpe(dailyReturnsFromSeries(slice, b.symbol), interval),
+        ret: returnFor(b.symbol),
       })),
     ];
-    return windowed;
-  }, [chartData, stats, selectedRange, selectedWindow, visibleChartData]);
+  }, [chartData, chartMode, interval, portfolioReturn, selectedRange, selectedWindow, stats, visibleChartData]);
 
   const activeRange =
     dragStartDate && dragEndDate ? orderedSelection(dragStartDate, dragEndDate) : selectedRange;
@@ -524,14 +769,15 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
       { key: 'value', label: 'Portfolio', color: '#10b981' },
       ...BENCHMARKS.map((b) => ({ key: b.symbol, label: b.label, color: b.color })),
     ];
+    const returnFor = (key: string) =>
+      chartMode === 'twr'
+        ? twrRangeReturn(chartData, key, selectedRange.startDate, selectedRange.endDate)
+        : rangeReturn(chartData, key, selectedRange.startDate, selectedRange.endDate);
     return {
       ...selectedRange,
-      series: series.map((s) => ({
-        ...s,
-        ret: rangeReturn(chartData, s.key, selectedRange.startDate, selectedRange.endDate),
-      })),
+      series: series.map((s) => ({ ...s, ret: returnFor(s.key) })),
     };
-  }, [chartData, selectedRange]);
+  }, [chartData, chartMode, selectedRange]);
 
   const handleMouseDown = (state: unknown) => {
     const date = getActiveDate(state);
@@ -592,6 +838,21 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
                 </button>
               ))}
             </div>
+            <div className="mt-2 flex gap-1.5">
+              {CHART_MODES.map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  className={`rounded border px-2 py-1 text-[11px] transition ${chartMode === m.key
+                    ? 'border-sky-500/70 bg-sky-500/10 text-sky-300'
+                    : 'border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200'
+                    }`}
+                  onClick={() => setChartMode(m.key)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
           </div>
           <span className="shrink-0 text-right text-xs text-neutral-500">{rangeSubtitle}</span>
         </div>
@@ -624,12 +885,15 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
                   tick={{ fill: '#6b7280', fontSize: 11 }}
                   axisLine={{ stroke: '#374151' }}
                   minTickGap={48}
+                  tickFormatter={(v) => formatTickLabel(String(v), interval)}
                 />
                 <YAxis
                   tick={{ fill: '#6b7280', fontSize: 11 }}
                   axisLine={{ stroke: '#374151' }}
                   width={64}
-                  tickFormatter={(v) => fmtUSD(Number(v))}
+                  tickFormatter={(v) =>
+                    chartMode === 'twr' ? fmtPct(Number(v), false) : fmtUSD(Number(v))
+                  }
                 />
                 <Tooltip
                   contentStyle={{
@@ -639,12 +903,13 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
                     fontSize: 12,
                   }}
                   labelStyle={{ color: '#9ca3af' }}
+                  labelFormatter={(label) => formatTickLabel(String(label), interval)}
                   formatter={(value: number, name) => {
                     const label =
                       name === 'value'
                         ? 'Portfolio'
                         : BENCHMARKS.find((b) => b.symbol === name)?.label ?? String(name);
-                    return [fmtUSD(value), label];
+                    return [chartMode === 'twr' ? fmtPct(value) : fmtUSD(value), label];
                   }}
                 />
                 <Legend
@@ -657,10 +922,15 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
                   }}
                 />
                 <ReferenceLine
-                  y={chartData[chartData.length - 1]?.cost ?? 0}
+                  y={chartMode === 'twr' ? 0 : chartData[chartData.length - 1]?.cost ?? 0}
                   stroke="#6b7280"
                   strokeDasharray="4 4"
-                  label={{ value: 'Cost basis', fill: '#6b7280', fontSize: 10, position: 'right' }}
+                  label={{
+                    value: chartMode === 'twr' ? 'Baseline' : 'Cost basis',
+                    fill: '#6b7280',
+                    fontSize: 10,
+                    position: 'right',
+                  }}
                 />
                 {activeRange && activeRange.startDate !== activeRange.endDate ? (
                   <ReferenceArea
@@ -701,7 +971,8 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
                 <div>
                   <div className="text-xs font-medium text-neutral-300">Selected window</div>
                   <div className="text-xs text-neutral-500">
-                    {selectedRangeStats.startDate} to {selectedRangeStats.endDate}
+                    {formatTickLabel(selectedRangeStats.startDate, interval)} to{' '}
+                    {formatTickLabel(selectedRangeStats.endDate, interval)}
                   </div>
                 </div>
                 <button

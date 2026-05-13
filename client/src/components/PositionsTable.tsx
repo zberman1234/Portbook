@@ -25,7 +25,7 @@ interface Props {
   loading: boolean;
   onSell: (
     positionId: string,
-    sale: { saleDate: string; shares: number; salePriceUSD?: number },
+    sale: { saleDate: string; shares: number; salePriceUSD?: number; cashWithdrawn?: boolean },
   ) => Promise<unknown>;
   selling: boolean;
   onUndoSale: (positionId: string, saleId: string) => Promise<unknown>;
@@ -53,6 +53,8 @@ type PriceChartRow = {
 
 type TimeWindowKey = '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | '2Y' | '5Y' | 'ALL';
 
+type ChartInterval = '5m' | '30m' | '1d' | '1wk';
+
 const TIME_WINDOWS: { key: TimeWindowKey; label: string }[] = [
   { key: '1D', label: '1D' },
   { key: '1W', label: '1W' },
@@ -64,6 +66,63 @@ const TIME_WINDOWS: { key: TimeWindowKey; label: string }[] = [
   { key: '5Y', label: '5Y' },
   { key: 'ALL', label: 'ALL' },
 ];
+
+function intervalForWindow(w: TimeWindowKey): ChartInterval {
+  switch (w) {
+    case '1D':
+      return '5m';
+    case '1W':
+      return '30m';
+    case '1M':
+    case '3M':
+    case '6M':
+      return '1d';
+    case '1Y':
+    case '2Y':
+    case '5Y':
+    case 'ALL':
+      return '1wk';
+  }
+}
+
+function staleTimeForInterval(interval: ChartInterval): number {
+  switch (interval) {
+    case '5m':
+      return 1000 * 60;
+    case '30m':
+      return 1000 * 60 * 5;
+    case '1d':
+      return 1000 * 60 * 60;
+    case '1wk':
+      return 1000 * 60 * 60 * 24;
+  }
+}
+
+function formatTickLabel(s: string, interval: ChartInterval): string {
+  if (interval === '5m') {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return s;
+    return d.toLocaleString([], {
+      weekday: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    });
+  }
+  if (interval === '30m') {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return s;
+    return d.toLocaleString([], {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    });
+  }
+  return s.slice(0, 10);
+}
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -102,7 +161,8 @@ function windowStartDate(windowKey: TimeWindowKey, today: string): string | null
 
 function historyStartDate(windowKey: TimeWindowKey, today: string): string {
   if (windowKey === 'ALL') return '1900-01-01';
-  if (windowKey === '1D') return shiftDateISO(today, -7, 'day');
+  if (windowKey === '1D') return shiftDateISO(today, -4, 'day');
+  if (windowKey === '1W') return shiftDateISO(today, -14, 'day');
   return windowStartDate(windowKey, today) ?? '1900-01-01';
 }
 
@@ -119,6 +179,7 @@ function buildPriceChartRows(
   currency: string,
   quotePriceDate: string | null,
   currentPriceNative: number,
+  interval: ChartInterval,
 ): PriceChartRow[] {
   const rows = (history ?? [])
     .map((row) => {
@@ -129,7 +190,12 @@ function buildPriceChartRows(
     })
     .filter((row): row is PriceChartRow => row !== null);
 
+  // For intraday intervals the latest 5m/30m bar already reflects the live
+  // price; injecting a daily-resolution quote would land at the wrong x-axis
+  // position. Skip the injection in that case.
   if (
+    interval !== '5m' &&
+    interval !== '30m' &&
     quotePriceDate &&
     Number.isFinite(currentPriceNative) &&
     currentPriceNative > 0
@@ -149,6 +215,11 @@ function visibleRowsForWindow(
   windowKey: TimeWindowKey,
   today: string,
 ): PriceChartRow[] {
+  // For 1D the buffer covers weekends; show only the most recent trading day's bars.
+  if (windowKey === '1D' && rows.length > 0) {
+    const lastDate = rows[rows.length - 1].date.slice(0, 10);
+    return rows.filter((r) => r.date.slice(0, 10) === lastDate);
+  }
   const startDate = windowStartDate(windowKey, today);
   if (!startDate) return rows;
 
@@ -225,8 +296,8 @@ function formatDateRange(startDate: string | null, endDate: string | null): stri
     year: 'numeric',
     timeZone: 'UTC',
   });
-  return `${formatter.format(new Date(`${startDate}T00:00:00Z`))}-${formatter.format(
-    new Date(`${endDate}T00:00:00Z`),
+  return `${formatter.format(new Date(`${startDate.slice(0, 10)}T00:00:00Z`))}-${formatter.format(
+    new Date(`${endDate.slice(0, 10)}T00:00:00Z`),
   )}`;
 }
 
@@ -271,7 +342,7 @@ function SellFormRow({
   defaultShares: number;
   selling: boolean;
   onCancel: () => void;
-  onSubmit: (sale: { saleDate: string; shares: number; salePriceUSD?: number }) => Promise<unknown>;
+  onSubmit: (sale: { saleDate: string; shares: number; salePriceUSD?: number; cashWithdrawn?: boolean }) => Promise<unknown>;
 }) {
   const today = todayISO();
   const [saleDate, setSaleDate] = useState(today);
@@ -279,6 +350,7 @@ function SellFormRow({
     defaultShares > 0 ? fmtShares(defaultShares).replace(/,/g, '') : '',
   );
   const [salePrice, setSalePrice] = useState('');
+  const [cashWithdrawn, setCashWithdrawn] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const isShort = position.shares < 0;
@@ -328,6 +400,7 @@ function SellFormRow({
         saleDate,
         shares: shareValue,
         ...(salePriceUSD !== undefined ? { salePriceUSD } : {}),
+        cashWithdrawn,
       });
       onCancel();
     } catch (err) {
@@ -408,9 +481,20 @@ function SellFormRow({
               {selling ? 'Saving…' : isShort ? 'Record cover' : 'Record sale'}
             </button>
           </div>
-          <div className="mt-2 text-xs text-neutral-500">
-            Remaining after {isShort ? 'cover' : 'sale'}:{' '}
-            <span className="num text-neutral-300">{fmtShares(estimatedRemaining)}</span>
+          <div className="mt-2 flex items-center justify-between gap-3 text-xs text-neutral-500">
+            <span>
+              Remaining after {isShort ? 'cover' : 'sale'}:{' '}
+              <span className="num text-neutral-300">{fmtShares(estimatedRemaining)}</span>
+            </span>
+            <label className="flex cursor-pointer items-center gap-2 text-neutral-400">
+              <input
+                type="checkbox"
+                checked={cashWithdrawn}
+                onChange={(event) => setCashWithdrawn(event.target.checked)}
+                className="h-3.5 w-3.5 rounded border-neutral-700 bg-neutral-900 text-emerald-500 focus:ring-emerald-500/50"
+              />
+              Withdraw proceeds
+            </label>
           </div>
           {error ? <div className="mt-2 text-xs text-red-400">{error}</div> : null}
         </form>
@@ -1112,11 +1196,12 @@ function PositionDropdown({ position, open }: { position: ActivePositionRow; ope
   const [dragStartDate, setDragStartDate] = useState<string | null>(null);
   const [dragEndDate, setDragEndDate] = useState<string | null>(null);
   const [customRange, setCustomRange] = useState<DateSelection | null>(null);
+  const interval = intervalForWindow(selectedWindow);
   const historyFrom = historyStartDate(selectedWindow, today);
   const historyQuery = useQuery({
-    queryKey: ['history', position.symbol, historyFrom, today],
-    queryFn: () => api.history(position.symbol, historyFrom, today),
-    staleTime: 1000 * 60 * 60,
+    queryKey: ['history', position.symbol, historyFrom, interval],
+    queryFn: () => api.history(position.symbol, historyFrom, today, interval),
+    staleTime: staleTimeForInterval(interval),
     enabled: open && !position.error,
   });
 
@@ -1127,8 +1212,9 @@ function PositionDropdown({ position, open }: { position: ActivePositionRow; ope
         position.currency,
         position.quotePriceDate,
         position.currentPriceNative,
+        interval,
       ),
-    [historyQuery.data, position.currency, position.quotePriceDate, position.currentPriceNative],
+    [historyQuery.data, position.currency, position.quotePriceDate, position.currentPriceNative, interval],
   );
   const visibleChartData = useMemo(
     () => visibleRowsForWindow(chartData, selectedWindow, today),
@@ -1270,6 +1356,7 @@ function PositionDropdown({ position, open }: { position: ActivePositionRow; ope
                           axisLine={{ stroke: '#374151' }}
                           tickLine={false}
                           minTickGap={48}
+                          tickFormatter={(v) => formatTickLabel(String(v), interval)}
                         />
                         <YAxis
                           tick={{ fill: '#6b7280', fontSize: 10 }}
@@ -1287,6 +1374,7 @@ function PositionDropdown({ position, open }: { position: ActivePositionRow; ope
                             fontSize: 12,
                           }}
                           labelStyle={{ color: '#9ca3af' }}
+                          labelFormatter={(label) => formatTickLabel(String(label), interval)}
                           formatter={(value) => [fmtPrice(Number(value)), 'Price']}
                         />
                         {activeRange && activeRange.startDate !== activeRange.endDate ? (
@@ -1450,7 +1538,7 @@ export function PositionsTable({
 
   async function submitSaleForRow(
     row: ActivePositionRow,
-    sale: { saleDate: string; shares: number; salePriceUSD?: number },
+    sale: { saleDate: string; shares: number; salePriceUSD?: number; cashWithdrawn?: boolean },
   ) {
     const isShort = row.shares < 0;
     const eligibleLots = row.lots

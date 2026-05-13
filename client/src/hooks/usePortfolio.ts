@@ -142,7 +142,7 @@ export function usePortfolio() {
       sale,
     }: {
       positionId: string;
-      sale: { saleDate: string; shares: number; salePriceUSD?: number };
+      sale: { saleDate: string; shares: number; salePriceUSD?: number; cashWithdrawn?: boolean };
     }) => {
       if (!activePortfolioIdState) {
         return Promise.reject(new Error('no active portfolio'));

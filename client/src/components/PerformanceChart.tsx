@@ -235,20 +235,6 @@ function buildPriceMap(history: HistoryRow[] | undefined): Map<string, number> {
   return m;
 }
 
-function firstPriceOnOrAfter(
-  sortedDates: string[],
-  priceByDate: Map<string, number>,
-  target: string,
-): number | null {
-  for (const d of sortedDates) {
-    if (d >= target) {
-      const v = priceByDate.get(d);
-      if (typeof v === 'number') return v;
-    }
-  }
-  return null;
-}
-
 function annualizedSharpe(dailyReturns: number[], interval: ChartInterval): number | null {
   if (dailyReturns.length < 2) return null;
   const n = dailyReturns.length;
@@ -306,7 +292,11 @@ function flowKeyFor(key: string): string {
 
 // Daily-Valuation TWR: chain (1 + period_return) where period_return treats the
 // row-to-row change in the series-specific flow field as an external cash flow
-// that doesn't count as return. Cash flow assumed at start of period.
+// that doesn't count as return. End-of-period convention: new shares purchased
+// with deposits and shares sold for withdrawals are valued at the period's
+// closing price, so the cash flow is subtracted from curV (not added to denom)
+// to isolate the pure price return on capital that was invested across the
+// full period.
 function twrRangeReturn(rows: ChartRow[], key: string, startDate: string, endDate: string) {
   const windowRows = rows.filter(
     (row) => row.date >= startDate && row.date <= endDate && typeof row[key] === 'number',
@@ -326,10 +316,9 @@ function twrRangeReturn(rows: ChartRow[], key: string, startDate: string, endDat
     const prevV = prev[key];
     const curV = cur[key];
     if (typeof prevV !== 'number' || typeof curV !== 'number') continue;
+    if (prevV <= 0) continue;
     const cashFlow = ((cur[fk] as number) ?? 0) - ((prev[fk] as number) ?? 0);
-    const denom = prevV + cashFlow;
-    if (denom <= 0) continue;
-    twr *= 1 + (curV - denom) / denom;
+    twr *= 1 + (curV - cashFlow - prevV) / prevV;
   }
 
   const pct = twr - 1;
@@ -341,6 +330,7 @@ function twrRangeReturn(rows: ChartRow[], key: string, startDate: string, endDat
 // Transform a chart slice into a TWR series indexed from the window's start (0%).
 // Each key gets its own series-specific flow term (portfolio = flow, benchmarks
 // = cost), so a withdrawal on the portfolio side doesn't distort SPY/SMH.
+// End-of-period cash flow convention: see [[twrRangeReturn]] for derivation.
 function toTwrSeries(rows: ChartRow[], keys: string[]): ChartRow[] {
   if (rows.length === 0) return [];
   const twr: Record<string, number> = {};
@@ -354,11 +344,10 @@ function toTwrSeries(rows: ChartRow[], keys: string[]): ChartRow[] {
         const prevV = prev[k];
         const curV = cur[k];
         if (typeof prevV !== 'number' || typeof curV !== 'number') continue;
+        if (prevV <= 0) continue;
         const fk = flowKeyFor(k);
         const cashFlow = ((cur[fk] as number) ?? 0) - ((prev[fk] as number) ?? 0);
-        const denom = prevV + cashFlow;
-        if (denom <= 0) continue;
-        twr[k] *= 1 + (curV - denom) / denom;
+        twr[k] *= 1 + (curV - cashFlow - prevV) / prevV;
       }
     }
     const row: ChartRow = { date: rows[i].date, value: 0, cost: 0, flow: 0 };
@@ -608,51 +597,48 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
 
     const costBasisByPosition = positions.map((p, i) => snaps[i]?.costBasisUSD ?? costBasisUSD(p));
 
-    type BenchSale = { date: string; sharesToSell: number; withdrawnUSD: number };
+    // Benchmark is simulated as a single shared pool per symbol: activations
+    // deposit $capital and buy shares at the row's price; cashWithdrawn sales
+    // withdraw $withdrawnUSD and sell shares at the row's price. Shares are not
+    // attributed to specific positions — a per-position attribution would let a
+    // single position's profitable sale "withdraw" more than that position's
+    // bench shares are worth, creating cashflow/value mismatches. Pooling makes
+    // each $X cashflow exactly match an $X change in bench value.
+    type BenchEvent = { date: string; kind: 'deposit' | 'withdraw'; amountUSD: number };
     type BenchSnap = {
-      sharesPerPosition: (number | null)[];
       priceByDate: Map<string, number>;
-      sortedDates: string[];
-      salesPerPosition: BenchSale[][];
+      events: BenchEvent[];
     };
     const benchSnaps: BenchSnap[] = benchmarkQueries.map((q) => {
       const priceByDate = buildPriceMap(q.data);
-      const sortedDates = Array.from(priceByDate.keys()).sort();
-      const sharesPerPosition = positions.map((p, i) => {
-        const buyPrice = firstPriceOnOrAfter(sortedDates, priceByDate, p.purchaseDate);
-        if (buyPrice === null || buyPrice <= 0) return null;
-        const startingCapital = Math.abs(costBasisByPosition[i]);
-        return startingCapital !== 0 ? startingCapital / buyPrice : null;
-      });
-      // For each position, compute equivalent benchmark sales matching cashWithdrawn
-      // portfolio sales: sell the same dollar amount from SPY/SMH at the benchmark's
-      // price on or after the sale date.
-      const salesPerPosition: BenchSale[][] = positions.map((p, i) => {
-        const initialShares = sharesPerPosition[i];
-        if (initialShares === null) return [];
-        const benchSales: BenchSale[] = [];
+      const events: BenchEvent[] = [];
+      positions.forEach((p, i) => {
+        const capital = Math.abs(costBasisByPosition[i]);
+        if (capital > 0) {
+          events.push({ date: activationByPosition[i], kind: 'deposit', amountUSD: capital });
+        }
         for (const sale of (p.sales ?? [])) {
           if (!sale.cashWithdrawn) continue;
           const withdrawnUSD = closingCashFlowUSD(p, sale);
           if (withdrawnUSD <= 0) continue;
-          const benchPrice = firstPriceOnOrAfter(sortedDates, priceByDate, sale.saleDate);
-          if (benchPrice === null || benchPrice <= 0) continue;
-          benchSales.push({ date: sale.saleDate, sharesToSell: withdrawnUSD / benchPrice, withdrawnUSD });
+          events.push({ date: sale.saleDate, kind: 'withdraw', amountUSD: withdrawnUSD });
         }
-        benchSales.sort((a, b) => a.date.localeCompare(b.date));
-        return benchSales;
       });
-      return { sharesPerPosition, priceByDate, sortedDates, salesPerPosition };
+      events.sort((a, b) => a.date.localeCompare(b.date));
+      return { priceByDate, events };
     });
 
     const rows: ChartRow[] = [];
     const prevPerSymbol = new Array<number | null>(positions.length).fill(null);
     const prevWithdrawnPerSymbol = new Array<number>(positions.length).fill(0);
     const benchLastPrice: (number | null)[] = benchmarkQueries.map(() => null);
-    // Track benchmark sale state: cumulative sold shares and withdrawn USD per benchmark per position.
-    const benchSaleIdx: number[][] = benchmarkQueries.map(() => new Array(positions.length).fill(0));
-    const benchCumSoldShares: number[][] = benchmarkQueries.map(() => new Array(positions.length).fill(0));
+    // Per-benchmark pool state. benchShares is the total SMH/SPY shares held;
+    // benchCumWithdrawn is the running sum of cashWithdrawn proceeds simulated
+    // out of the benchmark. benchEventIdx walks the pre-sorted event list.
+    const benchShares: number[] = benchmarkQueries.map(() => 0);
+    const benchEventIdx: number[] = benchmarkQueries.map(() => 0);
     const benchCumWithdrawn: number[] = benchmarkQueries.map(() => 0);
+    const benchAnyDeposit: boolean[] = benchmarkQueries.map(() => false);
     for (const d of allDates) {
       let value = 0;
       let cost = 0;
@@ -689,38 +675,32 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
       };
 
       benchSnaps.forEach((bs, bi) => {
-        // Apply any benchmark sales whose date has been reached.
-        for (let i = 0; i < positions.length; i++) {
-          if (activationByPosition[i] > d) continue;
-          const sales = bs.salesPerPosition[i];
-          while (benchSaleIdx[bi][i] < sales.length && sales[benchSaleIdx[bi][i]].date <= d) {
-            const s = sales[benchSaleIdx[bi][i]];
-            benchCumSoldShares[bi][i] += s.sharesToSell;
-            benchCumWithdrawn[bi] += s.withdrawnUSD;
-            benchSaleIdx[bi][i]++;
-          }
-        }
-
+        // Update the benchmark price for this row first; deposits and
+        // withdrawals applied below all transact against this price so each $X
+        // cashflow exactly matches an $X change in bench value.
         const priceOnDay = bs.priceByDate.get(d);
         if (typeof priceOnDay === 'number') benchLastPrice[bi] = priceOnDay;
         const price = benchLastPrice[bi];
-        if (price === null) return;
-        let bval = 0;
-        let any = false;
-        for (let i = 0; i < positions.length; i++) {
-          if (activationByPosition[i] > d) continue;
-          const initialShares = bs.sharesPerPosition[i];
-          if (initialShares === null) continue;
-          const remainingShares = Math.max(0, initialShares - benchCumSoldShares[bi][i]);
-          bval += remainingShares * price;
-          any = true;
+        if (price === null || price <= 0) return;
+
+        const events = bs.events;
+        while (benchEventIdx[bi] < events.length && events[benchEventIdx[bi]].date <= d) {
+          const ev = events[benchEventIdx[bi]];
+          if (ev.kind === 'deposit') {
+            benchShares[bi] += ev.amountUSD / price;
+            benchAnyDeposit[bi] = true;
+          } else {
+            benchShares[bi] = Math.max(0, benchShares[bi] - ev.amountUSD / price);
+            benchCumWithdrawn[bi] += ev.amountUSD;
+          }
+          benchEventIdx[bi]++;
         }
-        if (any) {
-          row[BENCHMARKS[bi].symbol] = bval;
-          // Flow for this benchmark = portfolio gross cost basis minus cumulative
-          // dollar value withdrawn from the benchmark via simulated sales.
-          row[`${BENCHMARKS[bi].symbol}_flow`] = row.cost - benchCumWithdrawn[bi];
-        }
+
+        if (!benchAnyDeposit[bi]) return;
+        row[BENCHMARKS[bi].symbol] = benchShares[bi] * price;
+        // Flow for this benchmark = portfolio gross cost basis minus cumulative
+        // dollar value withdrawn from the benchmark via simulated sales.
+        row[`${BENCHMARKS[bi].symbol}_flow`] = row.cost - benchCumWithdrawn[bi];
       });
 
       rows.push(row);

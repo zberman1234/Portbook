@@ -839,51 +839,53 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
     selectedWindow === 'ALL'
       ? `since ${earliest}`
       : formatDateRange(
-          visibleChartData[0]?.date ?? null,
-          visibleChartData[visibleChartData.length - 1]?.date ?? null,
-        );
+        visibleChartData[0]?.date ?? null,
+        visibleChartData[visibleChartData.length - 1]?.date ?? null,
+      );
 
   return (
     <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 lg:min-h-[30.25rem]">
       <div className="mb-4 space-y-3">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-medium text-neutral-300">Performance</h2>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {TIME_WINDOWS.map((window) => (
+          <h2 className="text-sm font-medium text-neutral-300">Performance</h2>
+          <span className="shrink-0 text-right text-xs text-neutral-500">{rangeSubtitle}</span>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-[12px]">
+            {CHART_MODES.map((m, i) => (
+              <span key={m.key} className="flex items-center gap-2.5">
+                {i > 0 && <span className="text-neutral-700">|</span>}
                 <button
-                  key={window.key}
                   type="button"
-                  className={`rounded border px-2 py-1 text-[11px] transition ${selectedWindow === window.key
-                    ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
-                    : 'border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200'
-                    }`}
-                  onClick={() => {
-                    setSelectedWindow(window.key);
-                    setSelectedRange(null);
-                  }}
-                >
-                  {window.label}
-                </button>
-              ))}
-            </div>
-            <div className="mt-2 flex gap-1.5">
-              {CHART_MODES.map((m) => (
-                <button
-                  key={m.key}
-                  type="button"
-                  className={`rounded border px-2 py-1 text-[11px] transition ${chartMode === m.key
-                    ? 'border-sky-500/70 bg-sky-500/10 text-sky-300'
-                    : 'border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200'
+                  className={`transition ${chartMode === m.key
+                    ? 'text-neutral-100 font-medium'
+                    : 'text-neutral-500 hover:text-neutral-300'
                     }`}
                   onClick={() => setChartMode(m.key)}
                 >
                   {m.label}
                 </button>
-              ))}
-            </div>
+              </span>
+            ))}
           </div>
-          <span className="shrink-0 text-right text-xs text-neutral-500">{rangeSubtitle}</span>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {TIME_WINDOWS.map((window) => (
+              <button
+                key={window.key}
+                type="button"
+                className={`rounded border px-2 py-1 text-[11px] transition ${selectedWindow === window.key
+                  ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
+                  : 'border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200'
+                  }`}
+                onClick={() => {
+                  setSelectedWindow(window.key);
+                  setSelectedRange(null);
+                }}
+              >
+                {window.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       {chartData.length === 0 ? (

@@ -72,39 +72,36 @@ const CHART_MODES: { key: ChartMode; label: string }[] = [
   { key: 'balance', label: 'Balance' },
 ];
 
-function intervalForWindow(w: TimeWindowKey): ChartInterval {
-  switch (w) {
-    case '1D':
-      return '5m';
-    case '1W':
-      return '30m';
-    case '1M':
-    case '3M':
-    case '6M':
-      return '1d';
-    case '1Y':
-    case '2Y':
-    case '5Y':
-    case 'ALL':
-      return '1wk';
-  }
+// Map the actual data span (in calendar days) to the best Yahoo interval.
+// Thresholds mirror the named-window mapping (1D→5m, 1W→30m, 1M–6M→1d, 1Y+→1wk)
+// but keyed off real days so a "5Y" window on a 1-week-old portfolio gets 30m bars.
+function intervalForSpanDays(days: number): ChartInterval {
+  if (days <= 4) return '5m';
+  if (days <= 14) return '30m';
+  if (days <= 365) return '1d';
+  return '1wk';
 }
 
-// Yahoo caps 5m at ~7 days and 30m at ~60 days; for short windows we fetch
-// only the recent slice we'll display (with a small cushion for weekends).
-function historyFromForWindow(
-  w: TimeWindowKey,
+// Compute the from-date for Yahoo history fetches.
+// Yahoo caps intraday data: ~7 calendar days for 5m, ~60 for 30m.
+// For daily/weekly there is no practical cap so we go back to purchaseDate.
+function historyFrom(
+  interval: ChartInterval,
   purchaseDate: string,
   today: string,
 ): string {
-  switch (w) {
-    case '1D':
-      return shiftDateISO(today, -4, 'day');
-    case '1W':
-      return shiftDateISO(today, -14, 'day');
+  let cap: string;
+  switch (interval) {
+    case '5m':
+      cap = shiftDateISO(today, -4, 'day');
+      break;
+    case '30m':
+      cap = shiftDateISO(today, -14, 'day');
+      break;
     default:
       return purchaseDate;
   }
+  return cap > purchaseDate ? cap : purchaseDate;
 }
 
 // React Query staleTime per interval — mirror the server's HISTORY_TTLS.
@@ -233,6 +230,22 @@ function buildPriceMap(history: HistoryRow[] | undefined): Map<string, number> {
     if (v !== null) m.set(r.date, v);
   });
   return m;
+}
+
+/** Latest benchmark bar on or before `instant` (ISO), for pricing deposits on anchor rows. */
+function lastAdjCloseOnOrBefore(history: HistoryRow[] | undefined, instant: string): number | null {
+  let bestDate = '';
+  let best: number | null = null;
+  for (const r of history ?? []) {
+    if (r.date > instant) continue;
+    const v = r.adjclose ?? r.close;
+    if (v === null || !Number.isFinite(v)) continue;
+    if (best === null || r.date >= bestDate) {
+      best = v;
+      bestDate = r.date;
+    }
+  }
+  return best;
 }
 
 function annualizedSharpe(dailyReturns: number[], interval: ChartInterval): number | null {
@@ -404,7 +417,16 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
 
   const symbols = useMemo(() => positions.map((p) => p.symbol), [positions]);
 
-  const interval = intervalForWindow(selectedWindow);
+  const effectiveSpanDays = useMemo(() => {
+    const winStart = windowStartDate(selectedWindow, today);
+    const effectiveStart = winStart !== null && winStart > earliest ? winStart : earliest;
+    return Math.max(1, Math.ceil(
+      (new Date(`${today}T00:00:00Z`).getTime() - new Date(`${effectiveStart}T00:00:00Z`).getTime()) /
+      (1000 * 60 * 60 * 24),
+    ));
+  }, [selectedWindow, today, earliest]);
+
+  const interval = intervalForSpanDays(effectiveSpanDays);
   const historyStaleTime = staleTimeForInterval(interval);
 
   const quotesQuery = useQuery({
@@ -430,7 +452,7 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
 
   const historyQueries = useQueries({
     queries: positions.map((p) => {
-      const from = historyFromForWindow(selectedWindow, p.purchaseDate, today);
+      const from = historyFrom(interval, p.purchaseDate, today);
       return {
         queryKey: ['history', p.symbol, from, interval],
         queryFn: () => api.history(p.symbol, from, today, interval),
@@ -447,7 +469,7 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
     queries: positions.map((p, i) => {
       const cur = effectiveCurrencies[i];
       const cu = cur.toUpperCase();
-      const fxFrom = historyFromForWindow(selectedWindow, p.purchaseDate, today);
+      const fxFrom = historyFrom(interval, p.purchaseDate, today);
       return {
         queryKey: ['history', `${cu}USD=X`, fxFrom, '1d'],
         queryFn: () => {
@@ -476,7 +498,7 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
     })),
   });
 
-  const benchmarkFrom = historyFromForWindow(selectedWindow, earliest, today);
+  const benchmarkFrom = historyFrom(interval, earliest, today);
 
   const spyHistoryQuery = useQuery({
     queryKey: ['history', 'SPY', benchmarkFrom, interval],
@@ -522,6 +544,21 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
         ? dayBars[Math.floor(dayBars.length / 2)]
         : `${p.purchaseDate}T12:00:00.000Z`;
     });
+
+    const minActivation =
+      activationByPosition.length > 0
+        ? activationByPosition.reduce((a, b) => (a < b ? a : b))
+        : null;
+    const winStart = windowStartDate(selectedWindow, today);
+    const purchaseAnchorRow =
+      minActivation !== null &&
+      (winStart === null || winStart < minActivation);
+    let datesForRows = allDates;
+    if (purchaseAnchorRow && minActivation !== null) {
+      const merged = new Set(allDates);
+      merged.add(minActivation);
+      datesForRows = Array.from(merged).sort();
+    }
 
     type Snap = {
       costBasisUSD: number;
@@ -639,7 +676,10 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
     const benchEventIdx: number[] = benchmarkQueries.map(() => 0);
     const benchCumWithdrawn: number[] = benchmarkQueries.map(() => 0);
     const benchAnyDeposit: boolean[] = benchmarkQueries.map(() => false);
-    for (const d of allDates) {
+    const spyHist = spyHistoryQuery.data;
+    const smhHist = smhHistoryQuery.data;
+    for (const d of datesForRows) {
+      const atPurchaseAnchor = purchaseAnchorRow && d === minActivation;
       let value = 0;
       let cost = 0;
       let grossCost = 0;
@@ -654,7 +694,10 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
         const snap = snaps[i];
         if (!snap) continue;
         const v = snap.usdByDate.get(d);
-        if (typeof v === 'number') {
+        if (atPurchaseAnchor) {
+          prevPerSymbol[i] = positionCost;
+          value += positionCost;
+        } else if (typeof v === 'number') {
           prevPerSymbol[i] = v;
           value += v;
         } else {
@@ -679,7 +722,13 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
         // withdrawals applied below all transact against this price so each $X
         // cashflow exactly matches an $X change in bench value.
         const priceOnDay = bs.priceByDate.get(d);
-        if (typeof priceOnDay === 'number') benchLastPrice[bi] = priceOnDay;
+        if (typeof priceOnDay === 'number') {
+          benchLastPrice[bi] = priceOnDay;
+        } else if (benchLastPrice[bi] === null) {
+          const hist = bi === 0 ? spyHist : smhHist;
+          const seeded = lastAdjCloseOnOrBefore(hist, d);
+          if (typeof seeded === 'number' && seeded > 0) benchLastPrice[bi] = seeded;
+        }
         const price = benchLastPrice[bi];
         if (price === null || price <= 0) return;
 
@@ -740,7 +789,19 @@ export function PerformanceChart({ positions, portfolioReturn }: Props) {
     ];
 
     return { chartData: rows, stats };
-  }, [positions, portfolioReturn, effectiveCurrencies, historyQueries, fxSeriesQueries, buyCloseQueries, buyFxQueries, spyHistoryQuery.data, smhHistoryQuery.data, interval]);
+  }, [
+    positions,
+    portfolioReturn,
+    effectiveCurrencies,
+    historyQueries,
+    fxSeriesQueries,
+    buyCloseQueries,
+    buyFxQueries,
+    spyHistoryQuery.data,
+    smhHistoryQuery.data,
+    interval,
+    selectedWindow,
+  ]);
 
   const visibleChartData = useMemo(
     () => visibleRowsForWindow(chartData, selectedWindow, today),
